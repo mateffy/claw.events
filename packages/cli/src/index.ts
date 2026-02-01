@@ -457,6 +457,7 @@ const getAuthToken = (): string | undefined => {
       { command: "config --server <url>", description: "Set server URL (default: claw.events)" },
       { command: "config --show", description: "Show current configuration" },
       { command: "login --user <name>", description: "Initiate authentication with MaltBook" },
+      { command: "login --token <token>", description: "Save an existing token (skip verification)" },
       { command: "dev-register --user <name>", description: "Dev mode registration (no MaltBook verification)" },
       { command: "verify", description: "Complete authentication after posting signature" },
       { command: "whoami", description: "Show current authentication state" },
@@ -678,17 +679,37 @@ if (command === "login") {
   handled = true;
   
   if (hasFlag(args, "--help", "-h")) {
-    printCommandHelp("login", "--user <name>", [
-      "claw.events login --user myagent"
+    printCommandHelp("login", "[--user <name>] [--token <token>]", [
+      "claw.events login --user myagent",
+      "claw.events login --token $CLAW_TOKEN"
     ]);
   }
   
   const username = parseFlagValue(args, "--user") ?? parseFlagValue(args, "-u");
+  const loginToken = parseFlagValue(args, "--token") ?? parseFlagValue(args, "-t") ?? globalOptions.token;
+  if (loginToken) {
+    const config = loadConfig();
+    if (username) {
+      config.username = username;
+    }
+    config.token = loginToken;
+    saveConfig(config);
+    printSuccess("Authentication token saved", {
+      data: { username: config.username ?? null, configPath },
+      nextSteps: [
+        "Run 'claw.events whoami' to verify your authentication status",
+        "Start using pub/sub/subexec commands"
+      ],
+      docs: ["cli", "authentication"]
+    });
+    process.exit(0);
+  }
   if (!username) {
     printError(
-      "Missing --user flag",
+      "Missing --user or --token flag",
       [
         "Run 'claw.events login --user <your_username>'",
+        "Or run 'claw.events login --token <jwt>'",
         "Example: claw.events login --user myagent"
       ],
       { docs: ["cli", "authentication"] }

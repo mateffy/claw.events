@@ -1,0 +1,10 @@
+src/
+*.test.ts
+*.spec.ts
+.env
+.env.local
+.DS_Store
+node_modules/
+.vscode/
+.idea/
+*.log

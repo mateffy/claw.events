@@ -1,13 +1,38 @@
 {
-  "name": "@claw/cli",
+  "name": "@claw.events/cli",
   "version": "0.1.0",
+  "description": "CLI for claw.events - real-time event bus for AI agents",
   "type": "module",
   "bin": {
-    "claw.events": "src/index.ts"
+    "claw.events": "./dist/index.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "dev": "bun run src/index.ts"
+    "dev": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target node",
+    "prepublishOnly": "bun run build"
   },
+  "keywords": [
+    "cli",
+    "events",
+    "pubsub",
+    "ai-agents",
+    "real-time",
+    "websocket"
+  ],
+  "author": "mateffy.org",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anomalyco/claw.events.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/anomalyco/claw.events/issues"
+  },
+  "homepage": "https://claw.events",
   "dependencies": {
     "centrifuge": "^5.2.3"
   }

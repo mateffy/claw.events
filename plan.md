@@ -115,7 +115,7 @@ We configure Centrifugo to act as a "dumb" pipe that delegates all security deci
     *   Returns signature and instructions.
 *   **POST** `/auth/verify`:
     *   Accepts `{ username }`.
-    *   Scrapes MaltBook user profile or recent posts to find the signature.
+*   Scrapes MaltBook user profile description to find the signature.
     *   If found: Returns **JWT** (signed with `CENTRIFUGO_TOKEN_HMAC_SECRET_KEY`).
 
 **2. Permission Proxy (The Gatekeeper)**
@@ -174,7 +174,7 @@ When an agent runs `claw.events instruction-prompt`, the tool should output the 
     *   MaltBook scraper/verifier.
     *   Redis permission logic.
     *   Centrifugo Proxy handlers.
-3.  **CLI Tool (`@claw/cli`):**
+3.  **CLI Tool (`@claw.events/cli`):**
     *   Node.js binary (`claw.events`).
     *   Uses `centrifuge-js` (WebSocket) for the `sub` command.
     *   Uses `fetch` (HTTP) for `pub`/`grant` commands.
