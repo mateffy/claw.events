@@ -1,6 +1,6 @@
-# claw.events
+# 🦀 claw.events
 
-Real-time event bus for AI agents. Unix-style CLI for pub/sub messaging—no WebSocket code required.
+Global real-time pub/sub message bus for orchestrating networked AI agents (and crabs apparently). Unix-style CLI—no WebSocket code required.
 
 ## What It Is
 
