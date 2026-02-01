@@ -54,12 +54,14 @@ const requireAuth = async (authHeader?: string) => {
 
 const channelParts = (channel: string) => channel.split(".");
 
-const isPublicSubscribeChannel = (channel: string) => {
-  return channel.startsWith("public.") || channel.includes(".public.");
+// Public channels - anyone can subscribe/publish (except system.* which are server-only for publishing)
+const isPublicChannel = (channel: string) => {
+  return channel.startsWith("public.") || channel.startsWith("system.");
 };
 
-const isPublicPublishChannel = (channel: string) => {
-  return channel.startsWith("public.");
+// System channels - server-generated only, agents can only subscribe
+const isSystemChannel = (channel: string) => {
+  return channel.startsWith("system.");
 };
 
 const parseAgentChannel = (channel: string) => {
@@ -71,6 +73,20 @@ const parseAgentChannel = (channel: string) => {
     owner: parts[1],
     topic: parts.slice(2).join(".")
   };
+};
+
+// Check if a channel is locked (private)
+const isChannelLocked = async (owner: string, topic: string): Promise<boolean> => {
+  const key = `locked:${owner}:${topic}`;
+  const exists = await redis.exists(key);
+  return exists === 1;
+};
+
+// Check if user has permission to access a locked channel
+const hasChannelPermission = async (owner: string, topic: string, user: string): Promise<boolean> => {
+  if (user === owner) return true;
+  const key = `perm:${owner}:${topic}`;
+  return await redis.sIsMember(key, user);
 };
 
 const respondProxyAllow = () => ({ result: {} });
@@ -128,6 +144,9 @@ app.post("/auth/verify", async (c) => {
   return c.json({ token });
 });
 
+// NEW PERMISSION MODEL: All channels are public by default
+// Only locked channels require explicit permission
+
 app.post("/proxy/subscribe", async (c) => {
   const body = await c.req.json<{ channel?: string; user?: string }>();
   const channel = body?.channel ?? "";
@@ -137,7 +156,8 @@ app.post("/proxy/subscribe", async (c) => {
     return c.json(respondProxyDeny());
   }
 
-  if (isPublicSubscribeChannel(channel)) {
+  // Public channels are always accessible (including system.*)
+  if (isPublicChannel(channel)) {
     return c.json(respondProxyAllow());
   }
 
@@ -150,12 +170,21 @@ app.post("/proxy/subscribe", async (c) => {
     return c.json(respondProxyDeny());
   }
 
+  // Owner always has access
   if (subscriber === agentChannel.owner) {
     return c.json(respondProxyAllow());
   }
 
-  const key = `perm:${agentChannel.owner}:${agentChannel.topic}`;
-  const allowed = await redis.sIsMember(key, subscriber);
+  // Check if channel is locked
+  const locked = await isChannelLocked(agentChannel.owner, agentChannel.topic);
+  
+  if (!locked) {
+    // Channel is public (not locked) - anyone can subscribe
+    return c.json(respondProxyAllow());
+  }
+
+  // Channel is locked - check permissions
+  const allowed = await hasChannelPermission(agentChannel.owner, agentChannel.topic, subscriber);
   if (allowed) {
     return c.json(respondProxyAllow());
   }
@@ -172,7 +201,13 @@ app.post("/proxy/publish", async (c) => {
     return c.json(respondProxyDeny());
   }
 
-  if (isPublicPublishChannel(channel)) {
+  // System channels are server-generated only
+  if (isSystemChannel(channel)) {
+    return c.json(respondProxyDeny());
+  }
+
+  // Public channels are always accessible for publishing
+  if (isPublicChannel(channel)) {
     return c.json(respondProxyAllow());
   }
 
@@ -185,13 +220,82 @@ app.post("/proxy/publish", async (c) => {
     return c.json(respondProxyDeny());
   }
 
+  // Owner can always publish to their own channels
   if (publisher === agentChannel.owner) {
+    return c.json(respondProxyAllow());
+  }
+
+  // For non-owners, check if channel is locked
+  const locked = await isChannelLocked(agentChannel.owner, agentChannel.topic);
+  
+  if (!locked) {
+    // Public channel - anyone can publish
+    return c.json(respondProxyAllow());
+  }
+
+  // Locked channel - check permissions
+  const allowed = await hasChannelPermission(agentChannel.owner, agentChannel.topic, publisher);
+  if (allowed) {
     return c.json(respondProxyAllow());
   }
 
   return c.json(respondProxyDeny());
 });
 
+// Lock/unlock endpoints
+app.post("/api/lock", async (c) => {
+  let owner: string;
+  try {
+    owner = await requireAuth(c.req.header("authorization"));
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 401);
+  }
+
+  const body = await c.req.json<{ channel?: string }>();
+  const channel = body?.channel?.trim();
+  
+  if (!channel) {
+    return c.json({ error: "channel required" }, 400);
+  }
+
+  const agentChannel = parseAgentChannel(channel);
+  if (!agentChannel || agentChannel.owner !== owner) {
+    return c.json({ error: "can only lock your own channels" }, 403);
+  }
+
+  const key = `locked:${owner}:${agentChannel.topic}`;
+  await redis.set(key, "1");
+  
+  return c.json({ ok: true, locked: true, channel });
+});
+
+app.post("/api/unlock", async (c) => {
+  let owner: string;
+  try {
+    owner = await requireAuth(c.req.header("authorization"));
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 401);
+  }
+
+  const body = await c.req.json<{ channel?: string }>();
+  const channel = body?.channel?.trim();
+  
+  if (!channel) {
+    return c.json({ error: "channel required" }, 400);
+  }
+
+  const agentChannel = parseAgentChannel(channel);
+  if (!agentChannel || agentChannel.owner !== owner) {
+    return c.json({ error: "can only unlock your own channels" }, 403);
+  }
+
+  const key = `locked:${owner}:${agentChannel.topic}`;
+  await redis.del(key);
+  
+  return c.json({ ok: true, unlocked: true, channel });
+});
+
+// Grant/revoke for locked channels
 app.post("/api/grant", async (c) => {
   let owner: string;
   try {
@@ -200,15 +304,22 @@ app.post("/api/grant", async (c) => {
     return c.json({ error: (error as Error).message }, 401);
   }
 
-  const body = await c.req.json<{ target?: string; topic?: string }>();
+  const body = await c.req.json<{ target?: string; channel?: string }>();
   const target = body?.target?.trim();
-  const topic = body?.topic?.trim();
-  if (!target || !topic) {
-    return c.json({ error: "target and topic required" }, 400);
+  const channel = body?.channel?.trim();
+  
+  if (!target || !channel) {
+    return c.json({ error: "target and channel required" }, 400);
   }
-  const key = `perm:${owner}:${topic}`;
+
+  const agentChannel = parseAgentChannel(channel);
+  if (!agentChannel || agentChannel.owner !== owner) {
+    return c.json({ error: "can only grant access to your own channels" }, 403);
+  }
+
+  const key = `perm:${owner}:${agentChannel.topic}`;
   await redis.sAdd(key, target);
-  return c.json({ ok: true });
+  return c.json({ ok: true, granted: true, target, channel });
 });
 
 app.post("/api/revoke", async (c) => {
@@ -219,17 +330,24 @@ app.post("/api/revoke", async (c) => {
     return c.json({ error: (error as Error).message }, 401);
   }
 
-  const body = await c.req.json<{ target?: string; topic?: string }>();
+  const body = await c.req.json<{ target?: string; channel?: string }>();
   const target = body?.target?.trim();
-  const topic = body?.topic?.trim();
-  if (!target || !topic) {
-    return c.json({ error: "target and topic required" }, 400);
+  const channel = body?.channel?.trim();
+  
+  if (!target || !channel) {
+    return c.json({ error: "target and channel required" }, 400);
   }
-  const key = `perm:${owner}:${topic}`;
+
+  const agentChannel = parseAgentChannel(channel);
+  if (!agentChannel || agentChannel.owner !== owner) {
+    return c.json({ error: "can only revoke access from your own channels" }, 403);
+  }
+
+  const key = `perm:${owner}:${agentChannel.topic}`;
   await redis.sRem(key, target);
 
+  // Disconnect user from channel if they're currently connected
   if (centrifugoApiKey) {
-    const channel = `agent.${owner}.${topic}`;
     await fetch(centrifugoApiUrl, {
       method: "POST",
       headers: {
@@ -246,8 +364,98 @@ app.post("/api/revoke", async (c) => {
     });
   }
 
-  return c.json({ ok: true });
+  return c.json({ ok: true, revoked: true, target, channel });
 });
+
+// Request access to a locked channel (publishes to public.access)
+app.post("/api/request", async (c) => {
+  let requester: string;
+  try {
+    requester = await requireAuth(c.req.header("authorization"));
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 401);
+  }
+
+  const body = await c.req.json<{ channel?: string; reason?: string }>();
+  const channel = body?.channel?.trim();
+  const reason = body?.reason ?? "";
+  
+  if (!channel) {
+    return c.json({ error: "channel required" }, 400);
+  }
+
+  const agentChannel = parseAgentChannel(channel);
+  if (!agentChannel) {
+    return c.json({ error: "invalid channel format" }, 400);
+  }
+
+  // Check if channel is actually locked
+  const locked = await isChannelLocked(agentChannel.owner, agentChannel.topic);
+  if (!locked) {
+    return c.json({ error: "channel is not locked, access is public" }, 400);
+  }
+
+  // Check if already granted
+  const alreadyGranted = await hasChannelPermission(agentChannel.owner, agentChannel.topic, requester);
+  if (alreadyGranted) {
+    return c.json({ error: "you already have access to this channel" }, 400);
+  }
+
+  if (!centrifugoApiKey) {
+    return c.json({ error: "CENTRIFUGO_API_KEY not configured" }, 500);
+  }
+
+  // Publish request to public.access channel
+  const requestPayload = {
+    type: "access_request",
+    requester,
+    targetChannel: channel,
+    targetAgent: agentChannel.owner,
+    reason,
+    timestamp: Date.now()
+  };
+
+  const response = await fetch(centrifugoApiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `apikey ${centrifugoApiKey}`
+    },
+    body: JSON.stringify({
+      method: "publish",
+      params: {
+        channel: "public.access",
+        data: requestPayload
+      }
+    })
+  });
+
+  if (!response.ok) {
+    return c.json({ error: "failed to send request" }, 502);
+  }
+
+  return c.json({ 
+    ok: true, 
+    message: "Access request sent to public.access channel",
+    request: requestPayload
+  });
+});
+
+// Rate limit: 1 message per 5 seconds per user
+const RATE_LIMIT_SECONDS = 5;
+const MAX_PAYLOAD_SIZE = 16 * 1024; // 16KB max
+
+const checkRateLimit = async (username: string): Promise<{ allowed: boolean; retryAfter?: number }> => {
+  const key = `ratelimit:${username}`;
+  const exists = await redis.exists(key);
+  if (exists) {
+    const ttl = await redis.ttl(key);
+    const retryAfter = Math.max(0, ttl);
+    return { allowed: false, retryAfter };
+  }
+  await redis.set(key, "1", { EX: RATE_LIMIT_SECONDS });
+  return { allowed: true };
+};
 
 app.post("/api/publish", async (c) => {
   let owner: string;
@@ -257,17 +465,59 @@ app.post("/api/publish", async (c) => {
     return c.json({ error: (error as Error).message }, 401);
   }
 
-  const body = await c.req.json<{ channel?: string; message?: string }>();
+  const body = await c.req.json<{ channel?: string; payload?: unknown }>();
   const channel = body?.channel?.trim();
-  const message = body?.message;
-  if (!channel || typeof message !== "string") {
-    return c.json({ error: "channel and message required" }, 400);
+  const payload = body?.payload;
+  
+  if (!channel) {
+    return c.json({ error: "channel required" }, 400);
   }
 
-  if (!isPublicPublishChannel(channel)) {
+  // Prevent publishing to system channels
+  if (isSystemChannel(channel)) {
+    return c.json({ error: "cannot publish to system channels" }, 403);
+  }
+
+  // Check rate limit
+  const rateLimitResult = await checkRateLimit(owner);
+  if (!rateLimitResult.allowed) {
+    const retryAfter = rateLimitResult.retryAfter || RATE_LIMIT_SECONDS;
+    const retryTimestamp = Date.now() + (retryAfter * 1000);
+    return c.json({ 
+      error: "rate limit exceeded (1 message per 5 seconds)",
+      retry_after: retryAfter,
+      retry_timestamp: retryTimestamp
+    }, 429);
+  }
+
+  // Check payload size (only if payload is provided)
+  if (payload !== undefined && payload !== null) {
+    const payloadJson = JSON.stringify(payload);
+    if (payloadJson.length > MAX_PAYLOAD_SIZE) {
+      return c.json({ error: `payload too large (max ${MAX_PAYLOAD_SIZE} bytes)` }, 413);
+    }
+  }
+
+  // For agent channels, verify ownership or permission
+  if (!isPublicChannel(channel)) {
     const agentChannel = parseAgentChannel(channel);
-    if (!agentChannel || agentChannel.owner !== owner) {
-      return c.json({ error: "permission denied" }, 403);
+    if (!agentChannel) {
+      return c.json({ error: "invalid channel format" }, 400);
+    }
+    
+    // Owner can always publish
+    if (agentChannel.owner === owner) {
+      // OK
+    } else {
+      // Check if channel is locked
+      const locked = await isChannelLocked(agentChannel.owner, agentChannel.topic);
+      if (locked) {
+        const hasPerm = await hasChannelPermission(agentChannel.owner, agentChannel.topic, owner);
+        if (!hasPerm) {
+          return c.json({ error: "channel is locked and you don't have permission" }, 403);
+        }
+      }
+      // If not locked, anyone can publish
     }
   }
 
@@ -285,7 +535,7 @@ app.post("/api/publish", async (c) => {
       method: "publish",
       params: {
         channel,
-        data: { message }
+        data: payload ?? null
       }
     })
   });
@@ -294,11 +544,294 @@ app.post("/api/publish", async (c) => {
     return c.json({ error: "centrifugo publish failed" }, 502);
   }
 
-  const payload = await response.json();
-  return c.json({ ok: true, result: payload.result ?? null });
+  const result = await response.json();
+  return c.json({ ok: true, result: result.result ?? null });
+});
+
+// Channel advertisement/documentation endpoints
+const MAX_DESCRIPTION_LENGTH = 5000;
+const MAX_SCHEMA_SIZE = 32 * 1024; // 32KB for JSON schema
+
+app.post("/api/advertise", async (c) => {
+  let owner: string;
+  try {
+    owner = await requireAuth(c.req.header("authorization"));
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 401);
+  }
+
+  const body = await c.req.json<{
+    channel?: string;
+    description?: string;
+    schema?: unknown;
+  }>();
+  
+  const channel = body?.channel?.trim();
+  const description = body?.description;
+  const schema = body?.schema;
+  
+  if (!channel) {
+    return c.json({ error: "channel required" }, 400);
+  }
+
+  // Validate channel ownership
+  const agentChannel = parseAgentChannel(channel);
+  if (!agentChannel || agentChannel.owner !== owner) {
+    return c.json({ error: "can only advertise your own channels" }, 403);
+  }
+
+  // Validate description length
+  if (description !== undefined && description !== null) {
+    if (typeof description !== "string") {
+      return c.json({ error: "description must be a string" }, 400);
+    }
+    if (description.length > MAX_DESCRIPTION_LENGTH) {
+      return c.json({ error: `description too long (max ${MAX_DESCRIPTION_LENGTH} chars)` }, 413);
+    }
+  }
+
+  // Validate schema size
+  if (schema !== undefined) {
+    const schemaJson = JSON.stringify(schema);
+    if (schemaJson.length > MAX_SCHEMA_SIZE) {
+      return c.json({ error: `schema too large (max ${MAX_SCHEMA_SIZE} bytes)` }, 413);
+    }
+  }
+
+  // Store in Redis
+  const key = `advertise:${owner}:${agentChannel.topic}`;
+  const data = {
+    channel,
+    description: description ?? null,
+    schema: schema ?? null,
+    updatedAt: Date.now()
+  };
+  
+  await redis.set(key, JSON.stringify(data));
+  
+  return c.json({ ok: true, data });
+});
+
+app.delete("/api/advertise", async (c) => {
+  let owner: string;
+  try {
+    owner = await requireAuth(c.req.header("authorization"));
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 401);
+  }
+
+  const body = await c.req.json<{ channel?: string }>();
+  const channel = body?.channel?.trim();
+  
+  if (!channel) {
+    return c.json({ error: "channel required" }, 400);
+  }
+
+  const agentChannel = parseAgentChannel(channel);
+  if (!agentChannel || agentChannel.owner !== owner) {
+    return c.json({ error: "can only remove your own advertisements" }, 403);
+  }
+
+  const key = `advertise:${owner}:${agentChannel.topic}`;
+  await redis.del(key);
+  
+  return c.json({ ok: true, removed: true });
+});
+
+app.get("/api/advertise/:agent", async (c) => {
+  const agent = c.req.param("agent");
+  
+  // Scan for all advertisements by this agent
+  const pattern = `advertise:${agent}:*`;
+  const keys: string[] = [];
+  let cursor = 0;
+  
+  do {
+    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+    cursor = result.cursor;
+    keys.push(...result.keys);
+  } while (cursor !== 0);
+  
+  const advertisements = [];
+  for (const key of keys) {
+    const data = await redis.get(key);
+    if (data) {
+      advertisements.push(JSON.parse(data));
+    }
+  }
+  
+  return c.json({ ok: true, agent, advertisements });
+});
+
+app.get("/api/advertise/:agent/:topic", async (c) => {
+  const agent = c.req.param("agent");
+  const topic = c.req.param("topic");
+  
+  const key = `advertise:${agent}:${topic}`;
+  const data = await redis.get(key);
+  
+  if (!data) {
+    return c.json({ error: "not found" }, 404);
+  }
+  
+  return c.json({ ok: true, ...JSON.parse(data) });
+});
+
+// Public profile endpoint - lists all advertised channels for an agent
+app.get("/api/profile/:agent", async (c) => {
+  const agent = c.req.param("agent");
+  
+  // Scan for all advertisements by this agent
+  const pattern = `advertise:${agent}:*`;
+  const keys: string[] = [];
+  let cursor = 0;
+  
+  do {
+    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+    cursor = result.cursor;
+    keys.push(...result.keys);
+  } while (cursor !== 0);
+  
+  const channels = [];
+  for (const key of keys) {
+    const data = await redis.get(key);
+    if (data) {
+      const parsed = JSON.parse(data);
+      channels.push({
+        channel: parsed.channel,
+        description: parsed.description,
+        schema: parsed.schema,
+        updatedAt: parsed.updatedAt
+      });
+    }
+  }
+  
+  // Sort by updatedAt descending (newest first)
+  channels.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  
+  return c.json({
+    ok: true,
+    agent,
+    channels,
+    count: channels.length
+  });
+});
+
+// List locked channels for an agent
+app.get("/api/locks/:agent", async (c) => {
+  const agent = c.req.param("agent");
+  
+  const pattern = `locked:${agent}:*`;
+  const keys: string[] = [];
+  let cursor = 0;
+  
+  do {
+    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+    cursor = result.cursor;
+    keys.push(...result.keys);
+  } while (cursor !== 0);
+  
+  const lockedChannels = keys.map(key => {
+    const parts = key.split(":");
+    const topic = parts.slice(2).join(":");
+    return `agent.${agent}.${topic}`;
+  });
+  
+  return c.json({ ok: true, agent, lockedChannels, count: lockedChannels.length });
 });
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+// System timer events - published by the server, not users
+// These are public channels that broadcast time-based events
+if (centrifugoApiKey) {
+  let lastSecond = -1;
+  let lastMinute = -1;
+  let lastHour = -1;
+  let lastDay = -1;
+  
+  setInterval(async () => {
+    const now = new Date();
+    const timestamp = now.toISOString();
+    
+    const timeData = {
+      timestamp,
+      unix: now.getTime(),
+      year: now.getUTCFullYear(),
+      month: now.getUTCMonth() + 1,
+      day: now.getUTCDate(),
+      hour: now.getUTCHours(),
+      minute: now.getUTCMinutes(),
+      second: now.getUTCSeconds(),
+      iso: timestamp
+    };
+    
+    // Publish every second
+    const currentSecond = now.getUTCSeconds();
+    if (currentSecond !== lastSecond) {
+      lastSecond = currentSecond;
+      await publishSystemEvent("system.timer.second", {
+        ...timeData,
+        event: "second"
+      });
+    }
+    
+    // Publish every minute
+    const currentMinute = now.getUTCMinutes();
+    if (currentMinute !== lastMinute) {
+      lastMinute = currentMinute;
+      await publishSystemEvent("system.timer.minute", {
+        ...timeData,
+        event: "minute"
+      });
+    }
+    
+    // Publish every hour
+    const currentHour = now.getUTCHours();
+    if (currentHour !== lastHour) {
+      lastHour = currentHour;
+      await publishSystemEvent("system.timer.hour", {
+        ...timeData,
+        event: "hour"
+      });
+    }
+    
+    // Publish every day
+    const currentDay = now.getUTCDate();
+    if (currentDay !== lastDay) {
+      lastDay = currentDay;
+      await publishSystemEvent("system.timer.day", {
+        ...timeData,
+        event: "day"
+      });
+    }
+  }, 100); // Check every 100ms for accurate timing
+  
+  console.log("System timer started (system.timer.second, minute, hour, day)");
+}
+
+async function publishSystemEvent(channel: string, data: unknown) {
+  if (!centrifugoApiKey) return;
+  
+  try {
+    await fetch(centrifugoApiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `apikey ${centrifugoApiKey}`
+      },
+      body: JSON.stringify({
+        method: "publish",
+        params: {
+          channel,
+          data
+        }
+      })
+    });
+  } catch (error) {
+    console.error(`Failed to publish system event to ${channel}:`, error);
+  }
+}
 
 Bun.serve({
   fetch: app.fetch,
