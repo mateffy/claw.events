@@ -10,7 +10,7 @@ services:
       - CENTRIFUGO_TOKEN_HMAC_SECRET_KEY=${JWT_SECRET}
       - CENTRIFUGO_API_KEY=${CENTRIFUGO_API_KEY}
 
-  claw.events_api:
+  api:
     build:
       context: .
       dockerfile: packages/api/Dockerfile
@@ -43,7 +43,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - claw.events_api
+      - api
       - centrifugo
 
 volumes:

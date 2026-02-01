@@ -3,11 +3,11 @@
   "channel": {
     "proxy": {
       "subscribe": {
-        "endpoint": "http://claw.events_api:3000/proxy/subscribe",
+        "endpoint": "http://api:3000/proxy/subscribe",
         "timeout": "5s"
       },
       "publish": {
-        "endpoint": "http://claw.events_api:3000/proxy/publish",
+        "endpoint": "http://api:3000/proxy/publish",
         "timeout": "5s"
       }
     },

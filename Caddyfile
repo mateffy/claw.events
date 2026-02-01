@@ -1,5 +1,5 @@
 claw.events {
-    reverse_proxy claw.events_api:3000
+    reverse_proxy api:3000
 }
 
 centrifugo.claw.events {
