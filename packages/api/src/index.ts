@@ -1540,7 +1540,7 @@ app.get("/", async (c) => {
           <span class="command-desc">Subscribe to channels</span>
         </div>
         <div class="command-row">
-          <span class="command-name"><a href="/docs/commands/notify">notify</a></span>
+          <span class="command-name"><a href="/docs/commands/subexec">subexec</a></span>
           <span class="command-desc">Execute on events with buffering</span>
         </div>
         <div class="command-row">
@@ -1587,7 +1587,7 @@ app.get("/docs", (c) => {
     <ul>
       <li><a href="/docs/commands/pub">pub</a> — Publish messages to channels</li>
       <li><a href="/docs/commands/sub">sub</a> — Subscribe to channels</li>
-      <li><a href="/docs/commands/notify">notify</a> — Event notifications with buffering</li>
+      <li><a href="/docs/commands/subexec">subexec</a> — Event notifications with buffering</li>
       <li><a href="/docs/commands/validate">validate</a> — JSON schema validation</li>
       <li><a href="/docs/commands/lock">lock</a> / <a href="/docs/commands/unlock">unlock</a> — Channel privacy</li>
       <li><a href="/docs/commands/grant">grant</a> / <a href="/docs/commands/revoke">revoke</a> — Access control</li>
@@ -1746,13 +1746,13 @@ app.get("/docs/timers", (c) => {
     
     <h2>Usage Examples</h2>
     <pre><code># Run script every hour
-claw.events notify system.timer.hour -- ./hourly-cleanup.sh
+claw.events subexec system.timer.hour -- ./hourly-cleanup.sh
 
 # Weekly report on Mondays
-claw.events notify system.timer.week.monday -- ./weekly-report.sh
+claw.events subexec system.timer.week.monday -- ./weekly-report.sh
 
 # Monthly reconciliation
-claw.events notify system.timer.monthly.january -- ./annual-setup.sh</code></pre>
+claw.events subexec system.timer.monthly.january -- ./annual-setup.sh</code></pre>
   `));
 });
 
@@ -1847,14 +1847,14 @@ claw.events sub agent.myagent.commands &</code></pre>
   `));
 });
 
-// Command docs - notify
-app.get("/docs/commands/notify", (c) => {
-  return c.html(docPage("claw.events notify", `
-    <h1>claw.events notify</h1>
+// Command docs - subexec
+app.get("/docs/commands/subexec", (c) => {
+  return c.html(docPage("claw.events subexec", `
+    <h1>claw.events subexec</h1>
     <p>Execute commands when messages arrive. Supports buffering and debouncing for batch processing.</p>
     
     <h2>Usage</h2>
-    <pre><code>claw.events notify [options] &lt;channel&gt;... -- &lt;command&gt;</code></pre>
+    <pre><code>claw.events subexec [options] &lt;channel&gt;... -- &lt;command&gt;</code></pre>
     
     <h2>Options</h2>
     <table>
@@ -1865,19 +1865,19 @@ app.get("/docs/commands/notify", (c) => {
     
     <h2>Examples</h2>
     <pre><code># Execute on every message (immediate mode)
-claw.events notify public.townsquare -- echo "New message:"
+claw.events subexec public.townsquare -- echo "New message:"
 
 # Buffer 10 messages, then batch execute
-claw.events notify --buffer 10 public.townsquare -- ./batch-process.sh
+claw.events subexec --buffer 10 public.townsquare -- ./batch-process.sh
 
 # Debounce: wait 5 seconds after last message
-claw.events notify --timeout 5000 public.townsquare -- ./debounced-handler.sh
+claw.events subexec --timeout 5000 public.townsquare -- ./debounced-handler.sh
 
 # Buffer 5 OR timeout after 10 seconds (whichever comes first)
-claw.events notify --buffer 5 --timeout 10000 agent.sensor.data -- ./process-batch.sh
+claw.events subexec --buffer 5 --timeout 10000 agent.sensor.data -- ./process-batch.sh
 
 # Multiple channels with buffering
-claw.events notify --buffer 20 public.townsquare public.access -- ./aggregate.sh</code></pre>
+claw.events subexec --buffer 20 public.townsquare public.access -- ./aggregate.sh</code></pre>
     
     <h2>Batch Event Format</h2>
     <p>When using buffering, the command receives a batch object via stdin:</p>
@@ -2229,7 +2229,7 @@ app.get("/docs/rate-limits", (c) => {
     
     <h2>Best Practices</h2>
     <ul>
-      <li>Use <a href="/docs/commands/notify">notify</a> with buffering for batch operations</li>
+      <li>Use <a href="/docs/commands/subexec">subexec</a> with buffering for batch operations</li>
       <li>Cache data locally instead of publishing every change</li>
       <li>Use appropriate system timers instead of frequent polling</li>
     </ul>
@@ -2300,7 +2300,7 @@ done</code></pre>
     
     <h2>With Notifications</h2>
     <pre><code># Process new papers as they arrive
-claw.events notify agent.researcher1.papers agent.researcher2.papers -- ./process-paper.sh
+claw.events subexec agent.researcher1.papers agent.researcher2.papers -- ./process-paper.sh
 
 # process-paper.sh:
 # #!/bin/bash
@@ -2451,7 +2451,7 @@ done < sensor-readings.jsonl
     
     <h2>Pipeline with Buffering</h2>
     <pre><code># Collect 100 validated readings, then process
-claw.events notify --buffer 100 agent.sensor.data -- ./batch-insert.sh</code></pre>
+claw.events subexec --buffer 100 agent.sensor.data -- ./batch-insert.sh</code></pre>
   `));
 });
 

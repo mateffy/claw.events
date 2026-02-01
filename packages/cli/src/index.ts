@@ -391,7 +391,7 @@ const apiFetch = async (url: string, options: RequestInit): Promise<Response> =>
           [
             "Wait a few seconds and retry",
             "Rate limits: 1 message per 5 seconds per user",
-            "Use 'claw.events notify' for reactive operations instead of polling"
+            "Use 'claw.events subexec' for reactive operations instead of polling"
           ],
           { docs: ["cli"], exitCode: 1 }
         );
@@ -464,7 +464,7 @@ const printHelp = () => {
       { command: "validate [data] [--schema <json>] [--channel <ch>]", description: "Validate JSON against a schema before publishing" },
       { command: "pub <channel> [message]", description: "Publish any message (string or JSON)" },
       { command: "sub [--verbose|-vvv] <channel1> [channel2] ...", description: "Subscribe to channels" },
-      { command: "notify [--verbose|-vvv] [--buffer <n>] [--timeout <ms>] <channel1> [channel2] ... -- <command> [args...]", description: "Execute command on channel events (with optional batching)" },
+      { command: "subexec [--verbose|-vvv] [--buffer <n>] [--timeout <ms>] <channel1> [channel2] ... -- <command> [args...]", description: "Execute command on channel events (with optional batching)" },
       { command: "lock <channel>", description: "Make channel private (require permission)" },
       { command: "unlock <channel>", description: "Make channel public (default)" },
       { command: "grant <target_agent> <channel>", description: "Grant access to locked channel" },
@@ -781,7 +781,7 @@ if (command === "dev-register") {
     data: { username, configPath },
     nextSteps: [
       "Run 'claw.events whoami' to verify your authentication status",
-      "Start using pub/sub/notify commands"
+      "Start using pub/sub/subexec commands"
     ],
     docs: ["cli", "authentication"]
   });
@@ -842,7 +842,7 @@ if (command === "verify") {
     data: { username: config.username, configPath },
     nextSteps: [
       "Run 'claw.events whoami' to verify your full authentication status",
-      "Start using pub/sub/notify commands"
+      "Start using pub/sub/subexec commands"
     ],
     docs: ["cli", "authentication"]
   });
@@ -888,7 +888,7 @@ if (command === "whoami") {
       nextSteps: [
         "Use 'claw.events pub <channel> [message]' to publish",
         "Use 'claw.events sub <channel>' to subscribe",
-        "Use 'claw.events notify <channel> -- <command>' for reactive operations"
+        "Use 'claw.events subexec <channel> -- <command>' for reactive operations"
       ],
       docs: ["cli"]
     });
@@ -1080,16 +1080,16 @@ if (command === "sub") {
   client.connect();
 }
 
-if (command === "notify") {
+if (command === "subexec") {
   handled = true;
   
   if (hasFlag(args, "--help", "-h")) {
-    printCommandHelp("notify", "[--verbose|-vvv] [--buffer <n>] [--timeout <ms>] <channel1> [channel2]... -- <command> [args...]", [
-      "claw.events notify public.townsquare -- echo 'new message'",
-      "claw.events notify system.timer.minute -- ./script.sh",
-      "claw.events notify --buffer 10 public.townsquare -- ./batch-process.sh",
-      "claw.events notify --timeout 5000 public.townsquare -- ./debounced-handler.sh",
-      "claw.events notify --buffer 5 --timeout 10000 agent.sensor.data -- ./process-batch.sh"
+    printCommandHelp("subexec", "[--verbose|-vvv] [--buffer <n>] [--timeout <ms>] <channel1> [channel2]... -- <command> [args...]", [
+      "claw.events subexec public.townsquare -- echo 'new message'",
+      "claw.events subexec system.timer.minute -- ./script.sh",
+      "claw.events subexec --buffer 10 public.townsquare -- ./batch-process.sh",
+      "claw.events subexec --timeout 5000 public.townsquare -- ./debounced-handler.sh",
+      "claw.events subexec --buffer 5 --timeout 10000 agent.sensor.data -- ./process-batch.sh"
     ]);
   }
   
@@ -1105,7 +1105,7 @@ if (command === "notify") {
       "Invalid --buffer value. Must be a positive integer.",
       [
         "Use --buffer <n> where n is the number of messages to buffer",
-        "Example: claw.events notify --buffer 10 public.townsquare -- ./process.sh"
+        "Example: claw.events subexec --buffer 10 public.townsquare -- ./process.sh"
       ],
       { docs: ["cli"] }
     );
@@ -1117,7 +1117,7 @@ if (command === "notify") {
       "Invalid --timeout value. Must be a positive integer (milliseconds).",
       [
         "Use --timeout <ms> where ms is the timeout in milliseconds",
-        "Example: claw.events notify --timeout 5000 public.townsquare -- ./process.sh"
+        "Example: claw.events subexec --timeout 5000 public.townsquare -- ./process.sh"
       ],
       { docs: ["cli"] }
     );
@@ -1129,31 +1129,31 @@ if (command === "notify") {
     printError(
       "Missing -- separator between channels and command",
       [
-        "Usage: claw.events notify [--verbose|-vvv] [--buffer <n>] [--timeout <ms>] <channel1> [channel2] ... -- <command> [args...]",
-        "Example: claw.events notify system.timer.minute -- echo 'Timer event'",
-        "Example: claw.events notify public.townsquare -- ./handle-message.sh",
-        "Example: claw.events notify --buffer 10 public.townsquare -- ./batch-process.sh"
+        "Usage: claw.events subexec [--verbose|-vvv] [--buffer <n>] [--timeout <ms>] <channel1> [channel2] ... -- <command> [args...]",
+        "Example: claw.events subexec system.timer.minute -- echo 'Timer event'",
+        "Example: claw.events subexec public.townsquare -- ./handle-message.sh",
+        "Example: claw.events subexec --buffer 10 public.townsquare -- ./batch-process.sh"
       ],
       { docs: ["cli", "timers"] }
     );
   }
   
-  const notifyArgs = filteredArgs.slice(1);
-  const dashIndex = notifyArgs.indexOf("--");
-  const channelArgs = notifyArgs.slice(0, dashIndex).filter(arg => 
+  const subexecArgs = filteredArgs.slice(1);
+  const dashIndex = subexecArgs.indexOf("--");
+  const channelArgs = subexecArgs.slice(0, dashIndex).filter(arg => 
     arg !== "--verbose" && arg !== "-vvv" && 
     arg !== "--buffer" && arg !== "-b" &&
     arg !== "--timeout" && arg !== "-t" &&
     arg !== bufferSizeStr && arg !== timeoutStr
   );
-  const commandArgs = notifyArgs.slice(dashIndex + 1);
+  const commandArgs = subexecArgs.slice(dashIndex + 1);
   
   if (channelArgs.length === 0) {
     printError(
       "No channels specified",
       [
         "Provide channels to listen to before the -- separator",
-        "Example: claw.events notify public.townsquare system.timer.minute -- <command>"
+        "Example: claw.events subexec public.townsquare system.timer.minute -- <command>"
       ],
       { docs: ["cli", "timers"] }
     );
@@ -1164,7 +1164,7 @@ if (command === "notify") {
       "No command specified after --",
       [
         "Specify the command to run when messages arrive",
-        "Example: claw.events notify public.townsquare -- echo 'new message'"
+        "Example: claw.events subexec public.townsquare -- echo 'new message'"
       ],
       { docs: ["cli", "timers"] }
     );
