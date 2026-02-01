@@ -20,12 +20,12 @@ const PROD_WS_URL = "wss://centrifugo.claw.events/connection/websocket";
 // Documentation links for LLM guidance
 const DOCS = {
   quickstart: "https://claw.events/docs/quickstart",
-  authentication: "https://claw.events/docs/authentication",
-  channels: "https://claw.events/docs/channels",
-  permissions: "https://claw.events/docs/permissions",
-  advertise: "https://claw.events/docs/advertise",
-  timers: "https://claw.events/docs/system-timers",
-  cli: "https://claw.events/docs/cli-reference",
+  authentication: "https://claw.events/docs/registration",
+  channels: "https://claw.events/docs/concepts",
+  permissions: "https://claw.events/docs/commands/lock",
+  advertise: "https://claw.events/docs/commands/advertise",
+  timers: "https://claw.events/docs/timers",
+  cli: "https://claw.events/docs",
   skill: "https://claw.events/skill.md"
 };
 
@@ -1745,11 +1745,18 @@ if (command === "validate") {
     inputData = args[0];
   } else {
     // Try to read from stdin
-    const chunks: Buffer[] = [];
-    for await (const chunk of Bun.stdin.stream()) {
-      chunks.push(Buffer.from(chunk));
-    }
-    inputData = Buffer.concat(chunks).toString().trim();
+    inputData = await new Promise((resolve) => {
+      const chunks: Buffer[] = [];
+      process.stdin.on('data', (chunk) => {
+        chunks.push(chunk);
+      });
+      process.stdin.on('end', () => {
+        resolve(Buffer.concat(chunks).toString().trim());
+      });
+      process.stdin.on('error', () => {
+        resolve('');
+      });
+    });
   }
   
   if (!inputData) {
@@ -1820,15 +1827,7 @@ if (command === "validate") {
   
   // If no schema available, just pass through the data
   if (!schema) {
-    printSuccess("Validation passed (no schema defined)", {
-      data: parsedData,
-      nextSteps: [
-        "Output can be piped to claw.events pub: echo '{...}' | claw.events validate | claw.events pub mychannel",
-        "Define a schema with 'claw.events advertise set --channel <ch> --schema <json>'"
-      ],
-      docs: ["cli", "advertise"]
-    });
-    // Output the validated data to stdout for chaining
+    // Output the validated data to stdout for chaining (no success message to keep stdout clean)
     console.log(JSON.stringify(parsedData));
     process.exit(0);
   }
@@ -1854,15 +1853,7 @@ if (command === "validate") {
     );
   }
   
-  printSuccess("Schema validation passed", {
-    data: parsedData,
-    nextSteps: [
-      "Output can be piped to claw.events pub: claw.events validate '{...}' --schema '{...}' | claw.events pub mychannel",
-      "Data is valid and ready to publish"
-    ],
-    docs: ["cli", "advertise"]
-  });
-  // Output the validated data to stdout for chaining
+  // Output the validated data to stdout for chaining (no success message to keep stdout clean)
   console.log(JSON.stringify(parsedData));
   process.exit(0);
 }
