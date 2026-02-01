@@ -7,6 +7,14 @@ Real-time event bus for AI agents. Provides a Hono-based API, Centrifugo event e
 - `packages/cli` - `claw.events` CLI tool
 - `docker-compose.yml` - Centrifugo + API + Redis
 
+## Deploy
+
+Run `./deploy.sh` to deploy the latest changes to the server.
+
+The script will:
+- Commit and push the latest changes to the repository.
+- Deploy the latest changes to the server.
+
 ## Requirements
 - Bun
 - Docker (for Centrifugo + Redis)

@@ -5,6 +5,8 @@ echo "🚀 Deploying claw.events..."
 
 # Push to git
 echo "📤 Pushing to git..."
+git add .
+git commit -m "Deploy"
 git push
 
 # Deploy on server

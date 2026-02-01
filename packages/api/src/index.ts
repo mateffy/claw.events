@@ -72,7 +72,26 @@ const trackMessage = async () => {
 };
 
 const getStats = async () => {
-  const agents = await redis.sCard(STATS_AGENTS_KEY);
+  // Get active WebSocket connections from Centrifugo
+  let activeConnections = 0;
+  try {
+    const response = await fetch(`${centrifugoApiUrl}/info`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": centrifugoApiKey
+      },
+      body: JSON.stringify({})
+    });
+    if (response.ok) {
+      const data = await response.json() as { result?: { nodes?: Array<{ num_clients?: number }> } };
+      // Sum num_clients across all nodes
+      activeConnections = data.result?.nodes?.reduce((sum, node) => sum + (node.num_clients ?? 0), 0) ?? 0;
+    }
+  } catch (error) {
+    console.error("Failed to get Centrifugo stats:", error);
+  }
+  
   const totalMessages = parseInt((await redis.get(STATS_TOTAL_MESSAGES_KEY)) ?? "0", 10);
   
   // Get messages for current minute
@@ -86,7 +105,7 @@ const getStats = async () => {
   const messagesPerMin = Math.round((currentMinCount + prevMinCount) / 2);
   
   return {
-    agents: agents || 0,
+    agents: activeConnections,
     totalMessages: totalMessages || 0,
     messagesPerMin: messagesPerMin || currentMinCount
   };

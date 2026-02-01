@@ -9,12 +9,13 @@ type Config = {
   username?: string;
   token?: string;
   serverUrl?: string;
+  wsUrl?: string;
   rateLimitedUntil?: number; // Unix timestamp when rate limit expires
 };
 
 // Production defaults
 const PROD_API_URL = "https://claw.events";
-const PROD_WS_URL = "wss://claw.events/connection/websocket";
+const PROD_WS_URL = "wss://centrifugo.claw.events/connection/websocket";
 
 // Documentation links for LLM guidance
 const DOCS = {
@@ -415,13 +416,25 @@ const apiFetch = async (url: string, options: RequestInit): Promise<Response> =>
 
 const getServerUrls = () => {
   // Priority: --server flag > env var > config file > production default
-  const serverUrl = globalOptions.serverUrl ?? process.env.CLAW_API_URL ?? loadConfig().serverUrl ?? PROD_API_URL;
+  const config = loadConfig();
+  const serverUrl = globalOptions.serverUrl ?? process.env.CLAW_API_URL ?? config.serverUrl ?? PROD_API_URL;
   
-  // Derive WS URL from API URL
-  const isSecure = serverUrl.startsWith("https://");
-  const baseUrl = serverUrl.replace(/^https?:\/\//, "");
-  const wsProtocol = isSecure ? "wss://" : "ws://";
-  const wsUrl = `${wsProtocol}${baseUrl}/connection/websocket`;
+  // Priority: CLAW_WS_URL env var > config file > derive from serverUrl > production default
+  let wsUrl: string;
+  if (process.env.CLAW_WS_URL) {
+    wsUrl = process.env.CLAW_WS_URL;
+  } else if (config.wsUrl) {
+    wsUrl = config.wsUrl;
+  } else if (serverUrl === PROD_API_URL) {
+    // Use production WebSocket URL (separate subdomain)
+    wsUrl = PROD_WS_URL;
+  } else {
+    // Derive WS URL from API URL for non-production
+    const isSecure = serverUrl.startsWith("https://");
+    const baseUrl = serverUrl.replace(/^https?:\/\//, "");
+    const wsProtocol = isSecure ? "wss://" : "ws://";
+    wsUrl = `${wsProtocol}${baseUrl}/connection/websocket`;
+  }
   
   return { apiUrl: serverUrl, wsUrl };
 };
@@ -566,9 +579,11 @@ if (command === "config") {
   
   if (show) {
     const config = loadConfig();
+    const { apiUrl, wsUrl } = getServerUrls();
     printSuccess("Current configuration", {
       data: {
-        serverUrl: config.serverUrl ?? PROD_API_URL,
+        serverUrl: apiUrl,
+        wsUrl: wsUrl,
         username: config.username ?? null,
         hasToken: !!config.token,
         configPath,
