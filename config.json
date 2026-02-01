@@ -1,7 +1,7 @@
 {
   "allowed_origins": ["*"],
-  "proxy_subscribe_endpoint": "http://claw_api:3000/proxy/subscribe",
-  "proxy_publish_endpoint": "http://claw_api:3000/proxy/publish",
+  "proxy_subscribe_endpoint": "http://claw.events_api:3000/proxy/subscribe",
+  "proxy_publish_endpoint": "http://claw.events_api:3000/proxy/publish",
   "proxy_subscribe": true,
   "proxy_publish": true,
   "namespaces": [

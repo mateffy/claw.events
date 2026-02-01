@@ -638,6 +638,64 @@ app.delete("/api/advertise", async (c) => {
   return c.json({ ok: true, removed: true });
 });
 
+// Search endpoint - search through all advertised channels
+// MUST be defined BEFORE /api/advertise/:agent to avoid route conflicts
+app.get("/api/advertise/search", async (c) => {
+  const query = c.req.query("q")?.trim().toLowerCase();
+  const limit = Math.min(parseInt(c.req.query("limit") ?? "20"), 100);
+  
+  if (!query) {
+    return c.json({ error: "search query required (use ?q=<query>)" }, 400);
+  }
+  
+  // Scan for all advertisements
+  const pattern = "advertise:*:*";
+  const keys: string[] = [];
+  let cursor = 0;
+  
+  do {
+    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+    cursor = result.cursor;
+    keys.push(...result.keys);
+  } while (cursor !== 0);
+  
+  const matches = [];
+  for (const key of keys) {
+    const data = await redis.get(key);
+    if (!data) continue;
+    
+    const parsed = JSON.parse(data);
+    const channel = parsed.channel?.toLowerCase() ?? "";
+    const description = parsed.description?.toLowerCase() ?? "";
+    const agent = parsed.channel?.split(".")[1]?.toLowerCase() ?? "";
+    
+    // Check if query matches channel name, description, or agent name
+    if (channel.includes(query) || description.includes(query) || agent.includes(query)) {
+      matches.push({
+        channel: parsed.channel,
+        description: parsed.description,
+        schema: parsed.schema,
+        updatedAt: parsed.updatedAt,
+        agent: parsed.channel?.split(".")[1] ?? null
+      });
+    }
+  }
+  
+  // Sort by updatedAt (newest first)
+  matches.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  
+  // Apply limit
+  const limitedMatches = matches.slice(0, limit);
+  
+  return c.json({
+    ok: true,
+    query: c.req.query("q"),
+    count: limitedMatches.length,
+    total: matches.length,
+    results: limitedMatches
+  });
+});
+
 app.get("/api/advertise/:agent", async (c) => {
   const agent = c.req.param("agent");
   
@@ -675,6 +733,44 @@ app.get("/api/advertise/:agent/:topic", async (c) => {
   }
   
   return c.json({ ok: true, ...JSON.parse(data) });
+});
+
+// List all advertised channels (no agent = all channels)
+app.get("/api/advertise/list", async (c) => {
+  // Scan for all advertisements
+  const pattern = "advertise:*:*";
+  const keys: string[] = [];
+  let cursor = 0;
+  
+  do {
+    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+    cursor = result.cursor;
+    keys.push(...result.keys);
+  } while (cursor !== 0);
+  
+  const channels = [];
+  for (const key of keys) {
+    const data = await redis.get(key);
+    if (data) {
+      const parsed = JSON.parse(data);
+      channels.push({
+        channel: parsed.channel,
+        description: parsed.description,
+        schema: parsed.schema,
+        updatedAt: parsed.updatedAt,
+        agent: parsed.channel?.split(".")[1] ?? null
+      });
+    }
+  }
+  
+  // Sort by updatedAt descending (newest first)
+  channels.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  
+  return c.json({
+    ok: true,
+    channels,
+    count: channels.length
+  });
 });
 
 // Public profile endpoint - lists all advertised channels for an agent
@@ -749,6 +845,15 @@ if (centrifugoApiKey) {
   let lastMinute = -1;
   let lastHour = -1;
   let lastDay = -1;
+  let lastWeekDay = -1;
+  let lastMonth = -1;
+  let lastYear = -1;
+  
+  // Day names for weekly timers (0=Sunday, 1=Monday, etc.)
+  const weekDays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  // Month names for monthly timers (0=January, 1=February, etc.)
+  const monthNames = ["january", "february", "march", "april", "may", "june", 
+                      "july", "august", "september", "october", "november", "december"];
   
   setInterval(async () => {
     const now = new Date();
@@ -804,10 +909,47 @@ if (centrifugoApiKey) {
         ...timeData,
         event: "day"
       });
+      
+      // Publish weekly events (on specific days)
+      const currentWeekDay = now.getUTCDay();
+      if (currentWeekDay !== lastWeekDay) {
+        lastWeekDay = currentWeekDay;
+        const dayName = weekDays[currentWeekDay];
+        await publishSystemEvent(`system.timer.week.${dayName}`, {
+          ...timeData,
+          event: "week",
+          dayOfWeek: currentWeekDay,
+          dayName
+        });
+      }
+    }
+    
+    // Publish monthly events (on the first day of each month)
+    const currentMonth = now.getUTCMonth();
+    if (currentMonth !== lastMonth && currentDay === 1) {
+      lastMonth = currentMonth;
+      const monthName = monthNames[currentMonth];
+      await publishSystemEvent(`system.timer.monthly.${monthName}`, {
+        ...timeData,
+        event: "monthly",
+        month: currentMonth + 1,
+        monthName
+      });
+    }
+    
+    // Publish yearly events (on January 1st)
+    const currentYear = now.getUTCFullYear();
+    if (currentYear !== lastYear && currentMonth === 0 && currentDay === 1) {
+      lastYear = currentYear;
+      await publishSystemEvent("system.timer.yearly", {
+        ...timeData,
+        event: "yearly",
+        year: currentYear
+      });
     }
   }, 100); // Check every 100ms for accurate timing
   
-  console.log("System timer started (system.timer.second, minute, hour, day)");
+  console.log("System timer started (second, minute, hour, day, week.*, monthly.*, yearly)");
 }
 
 async function publishSystemEvent(channel: string, data: unknown) {
@@ -838,4 +980,4 @@ Bun.serve({
   port
 });
 
-console.log(`claw api listening on ${port}`);
+console.log(`claw.events api listening on ${port}`);

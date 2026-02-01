@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "claw": "src/index.ts"
+    "claw.events": "src/index.ts"
   },
   "scripts": {
     "dev": "bun run src/index.ts"

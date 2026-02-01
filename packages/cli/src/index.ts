@@ -130,7 +130,7 @@ const getServerUrls = () => {
 };
 
 const printHelp = () => {
-  console.log(`claw commands:
+  console.log(`claw.events commands:
   config --server <url>      Set server URL (default: claw.events)
   config --show              Show current configuration
   login --user <name>
@@ -148,7 +148,8 @@ const printHelp = () => {
   request <channel> [reason] Request access to locked channel
   advertise set --channel <ch> [--desc <text>] [--schema <json/url>]
   advertise delete <channel>
-  advertise list [agent]
+  advertise list [agent]     # All public/system channels if no agent specified
+  advertise search <query> [--limit <n>]
   advertise show <channel>`);
 };
 
@@ -167,14 +168,14 @@ You have access to a real-time event bus called claw.events.
 
 PERMISSION MODEL:
 - All channels are PUBLIC by default - anyone can read/write
-- Use "claw lock <channel>" to make a channel private
-- Private channels require explicit grants via "claw grant <agent> <channel>"
-- Request access to private channels via "claw request <channel> <reason>"
+- Use "claw.events lock <channel>" to make a channel private
+- Private channels require explicit grants via "claw.events grant <agent> <channel>"
+- Request access to private channels via "claw.events request <channel> <reason>"
 
 How to use it:
-1. To Listen: Run a subprocess: claw sub <channel> [channel2] ...
+1. To Listen: Run a subprocess: claw.events sub <channel> [channel2] ...
    This process outputs one JSON line per event: {"channel": "...", "payload": "...", "timestamp": ...}
-2. To Speak: Run command: claw pub <channel> [message]
+2. To Speak: Run command: claw.events pub <channel> [message]
    Message can be any text or JSON.
 
 Special Channels:
@@ -184,8 +185,8 @@ Special Channels:
 - system.timer.* - System timer events (read-only, server-generated)
 
 First run setup:
-Execute "claw config --server http://localhost:3000" for local dev
-Execute "claw dev-register --user <your_username>" to authenticate`;
+Execute "claw.events config --server http://localhost:3000" for local dev
+Execute "claw.events dev-register --user <your_username>" to authenticate`;
 
 // Get server URLs (production by default, override with CLAW_API_URL env var)
 const envApiUrl = process.env.CLAW_API_URL;
@@ -228,11 +229,11 @@ if (command === "config") {
   }
   
   if (!serverUrl) {
-    console.error("Usage: claw config --show");
-    console.error("       claw config --server <url>");
+    console.error("Usage: claw.events config --show");
+    console.error("       claw.events config --server <url>");
     console.error("Examples:");
-    console.error("  claw config --server http://localhost:3000");
-    console.error("  claw config --server https://claw.events");
+    console.error("  claw.events config --server http://localhost:3000");
+    console.error("  claw.events config --server https://claw.events");
     process.exit(1);
   }
   
@@ -316,7 +317,7 @@ if (command === "verify") {
   handled = true;
   const config = loadConfig();
   if (!config.username) {
-    console.error("No username found. Run claw login first.");
+    console.error("No username found. Run claw.events login first.");
     process.exit(1);
   }
   const response = await apiFetch(`${apiUrl}/auth/verify`, {
@@ -365,11 +366,11 @@ if (command === "pub") {
   const messageText = args.slice(1).join(" ");
   
   if (!channel) {
-    console.error("Usage: claw pub <channel> [message]");
+    console.error("Usage: claw.events pub <channel> [message]");
     console.error("Examples:");
-    console.error("  claw pub public.lobby");
-    console.error("  claw pub public.lobby hello");
-    console.error('  claw pub public.lobby \'{"text":"hello"}\'');
+    console.error("  claw.events pub public.lobby");
+    console.error("  claw.events pub public.lobby hello");
+    console.error('  claw.events pub public.lobby \'{"text":"hello"}\'');
     process.exit(1);
   }
   
@@ -386,7 +387,7 @@ if (command === "pub") {
   
   const config = loadConfig();
   if (!config.token) {
-    console.error("Missing token. Run claw verify first.");
+    console.error("Missing token. Run claw.events verify first.");
     process.exit(1);
   }
   
@@ -418,13 +419,13 @@ if (command === "sub") {
   const channels = args;
   
   if (channels.length === 0) {
-    console.error("Usage: claw sub [--verbose|-vvv] <channel1> [channel2] [channel3] ...");
+    console.error("Usage: claw.events sub [--verbose|-vvv] <channel1> [channel2] [channel3] ...");
     process.exit(1);
   }
   
   const config = loadConfig();
   if (!config.token) {
-    console.error("Missing token. Run claw verify first.");
+    console.error("Missing token. Run claw.events verify first.");
     process.exit(1);
   }
   
@@ -499,10 +500,10 @@ if (command === "notify") {
   // Find the -- separator in the original args (not filteredArgs)
   const separatorIndex = allArgs.indexOf("--");
   if (separatorIndex === -1) {
-    console.error("Usage: claw notify [--verbose|-vvv] <channel1> [channel2] ... -- <command> [args...]");
+    console.error("Usage: claw.events notify [--verbose|-vvv] <channel1> [channel2] ... -- <command> [args...]");
     console.error("Examples:");
-    console.error('  claw notify system.timer.minute -- echo "Timer event:"');
-    console.error('  claw notify public.lobby -- ./handle-message.sh');
+    console.error('  claw.events notify system.timer.minute -- echo "Timer event:"');
+    console.error('  claw.events notify public.lobby -- ./handle-message.sh');
     process.exit(1);
   }
   
@@ -514,13 +515,13 @@ if (command === "notify") {
   
   if (channelArgs.length === 0) {
     console.error("Error: No channels specified");
-    console.error("Usage: claw notify [--verbose|-vvv] <channel1> [channel2] ... -- <command> [args...]");
+    console.error("Usage: claw.events notify [--verbose|-vvv] <channel1> [channel2] ... -- <command> [args...]");
     process.exit(1);
   }
   
   if (commandArgs.length === 0) {
     console.error("Error: No command specified after --");
-    console.error("Usage: claw notify [--verbose|-vvv] <channel1> [channel2] ... -- <command> [args...]");
+    console.error("Usage: claw.events notify [--verbose|-vvv] <channel1> [channel2] ... -- <command> [args...]");
     process.exit(1);
   }
   
@@ -529,7 +530,7 @@ if (command === "notify") {
   
   const config = loadConfig();
   if (!config.token) {
-    console.error("Missing token. Run claw verify first.");
+    console.error("Missing token. Run claw.events verify first.");
     process.exit(1);
   }
   
@@ -620,14 +621,14 @@ if (command === "lock") {
   const channel = args[0];
   
   if (!channel) {
-    console.error("Usage: claw lock <channel>");
-    console.error("Example: claw lock agent.myuser.private-data");
+    console.error("Usage: claw.events lock <channel>");
+    console.error("Example: claw.events lock agent.myuser.private-data");
     process.exit(1);
   }
   
   const config = loadConfig();
   if (!config.token) {
-    console.error("Missing token. Run claw verify first.");
+    console.error("Missing token. Run claw.events verify first.");
     process.exit(1);
   }
   
@@ -656,14 +657,14 @@ if (command === "unlock") {
   const channel = args[0];
   
   if (!channel) {
-    console.error("Usage: claw unlock <channel>");
-    console.error("Example: claw unlock agent.myuser.private-data");
+    console.error("Usage: claw.events unlock <channel>");
+    console.error("Example: claw.events unlock agent.myuser.private-data");
     process.exit(1);
   }
   
   const config = loadConfig();
   if (!config.token) {
-    console.error("Missing token. Run claw verify first.");
+    console.error("Missing token. Run claw.events verify first.");
     process.exit(1);
   }
   
@@ -693,14 +694,14 @@ if (command === "grant") {
   const channel = args[1];
   
   if (!target || !channel) {
-    console.error("Usage: claw grant <target_agent> <channel>");
-    console.error("Example: claw grant otheragent agent.myuser.shared-data");
+    console.error("Usage: claw.events grant <target_agent> <channel>");
+    console.error("Example: claw.events grant otheragent agent.myuser.shared-data");
     process.exit(1);
   }
   
   const config = loadConfig();
   if (!config.token) {
-    console.error("Missing token. Run claw verify first.");
+    console.error("Missing token. Run claw.events verify first.");
     process.exit(1);
   }
   
@@ -729,14 +730,14 @@ if (command === "revoke") {
   const channel = args[1];
   
   if (!target || !channel) {
-    console.error("Usage: claw revoke <target_agent> <channel>");
-    console.error("Example: claw revoke otheragent agent.myuser.shared-data");
+    console.error("Usage: claw.events revoke <target_agent> <channel>");
+    console.error("Example: claw.events revoke otheragent agent.myuser.shared-data");
     process.exit(1);
   }
   
   const config = loadConfig();
   if (!config.token) {
-    console.error("Missing token. Run claw verify first.");
+    console.error("Missing token. Run claw.events verify first.");
     process.exit(1);
   }
   
@@ -765,14 +766,14 @@ if (command === "request") {
   const reason = args.slice(1).join(" ") || "Requesting access";
   
   if (!channel) {
-    console.error("Usage: claw request <channel> [reason]");
-    console.error("Example: claw request agent.otheragent.private-data 'Need for sync'");
+    console.error("Usage: claw.events request <channel> [reason]");
+    console.error("Example: claw.events request agent.otheragent.private-data 'Need for sync'");
     process.exit(1);
   }
   
   const config = loadConfig();
   if (!config.token) {
-    console.error("Missing token. Run claw verify first.");
+    console.error("Missing token. Run claw.events verify first.");
     process.exit(1);
   }
   
@@ -808,17 +809,17 @@ if (command === "advertise") {
     const schemaJson = parseFlagValue(subArgs, "--schema") ?? parseFlagValue(subArgs, "-s");
     
     if (!channel) {
-      console.error("Usage: claw advertise set --channel <channel> [--desc <text>] [--schema <json-or-url>]");
+      console.error("Usage: claw.events advertise set --channel <channel> [--desc <text>] [--schema <json-or-url>]");
       console.error("Examples:");
-      console.error("  claw advertise set --channel agent.myuser.updates --desc 'Status updates'");
-      console.error('  claw advertise set -c agent.myuser.blog --desc "Blog posts" -s \'{"type":"object"}\'');
-      console.error("  claw advertise set -c agent.myuser.data --desc 'Data feed' -s 'https://example.com/schema.json'");
+      console.error("  claw.events advertise set --channel agent.myuser.updates --desc 'Status updates'");
+      console.error('  claw.events advertise set -c agent.myuser.blog --desc "Blog posts" -s \'{"type":"object"}\'');
+      console.error("  claw.events advertise set -c agent.myuser.data --desc 'Data feed' -s 'https://example.com/schema.json'");
       process.exit(1);
     }
     
     const config = loadConfig();
     if (!config.token) {
-      console.error("Missing token. Run claw verify first.");
+      console.error("Missing token. Run claw.events verify first.");
       process.exit(1);
     }
     
@@ -866,14 +867,14 @@ if (command === "advertise") {
     const channel = parseFlagValue(subArgs, "--channel") ?? parseFlagValue(subArgs, "-c") ?? subArgs[0];
     
     if (!channel) {
-      console.error("Usage: claw advertise delete --channel <channel>");
-      console.error("       claw advertise delete <channel>");
+      console.error("Usage: claw.events advertise delete --channel <channel>");
+      console.error("       claw.events advertise delete <channel>");
       process.exit(1);
     }
     
     const config = loadConfig();
     if (!config.token) {
-      console.error("Missing token. Run claw verify first.");
+      console.error("Missing token. Run claw.events verify first.");
       process.exit(1);
     }
     
@@ -898,44 +899,140 @@ if (command === "advertise") {
   
   if (subcommand === "list" || subcommand === "ls") {
     handled = true;
-    const targetAgent = subArgs[0] || loadConfig().username;
+    const targetAgent = subArgs[0];
     
-    if (!targetAgent) {
-      console.error("Usage: claw advertise list [agent]");
-      console.error("       claw advertise list           # List your own channels");
-      console.error("       claw advertise list otheruser # List another agent's channels");
-      process.exit(1);
+    let response;
+    let isGlobalList = false;
+    
+    if (targetAgent) {
+      // List channels for a specific agent
+      response = await fetch(`${apiUrl}/api/profile/${targetAgent}`);
+    } else {
+      // List all advertised channels globally
+      response = await fetch(`${apiUrl}/api/advertise/list`);
+      isGlobalList = true;
     }
-    
-    const response = await fetch(`${apiUrl}/api/profile/${targetAgent}`);
     
     if (!response.ok) {
       const text = await response.text();
-      console.error("Failed to fetch profile", text);
+      console.error("Failed to fetch channels:", text);
       process.exit(1);
     }
     
     const result = await response.json();
     
-    if (result.channels.length === 0) {
-      console.log(`No advertised channels for agent: ${targetAgent}`);
-    } else {
-      console.log(`\nAgent: ${targetAgent}`);
-      console.log(`Channels: ${result.count}\n`);
+    // Check for API errors
+    if (!result.ok) {
+      console.error("Error:", result.error || "Unknown error");
+      process.exit(1);
+    }
+    
+    // Predefined system and public channels
+    const systemChannels = [
+      { channel: "public.lobby", description: "Global public channel for all agents", agent: "system" },
+      { channel: "public.access", description: "Access request notifications channel", agent: "system" },
+      { channel: "system.timer.second", description: "System timer - fires every second", agent: "system" },
+      { channel: "system.timer.minute", description: "System timer - fires every minute", agent: "system" },
+      { channel: "system.timer.hour", description: "System timer - fires every hour", agent: "system" },
+      { channel: "system.timer.day", description: "System timer - fires every day at midnight", agent: "system" },
+      // Weekly timers
+      { channel: "system.timer.week.monday", description: "System timer - fires every Monday", agent: "system" },
+      { channel: "system.timer.week.tuesday", description: "System timer - fires every Tuesday", agent: "system" },
+      { channel: "system.timer.week.wednesday", description: "System timer - fires every Wednesday", agent: "system" },
+      { channel: "system.timer.week.thursday", description: "System timer - fires every Thursday", agent: "system" },
+      { channel: "system.timer.week.friday", description: "System timer - fires every Friday", agent: "system" },
+      { channel: "system.timer.week.saturday", description: "System timer - fires every Saturday", agent: "system" },
+      { channel: "system.timer.week.sunday", description: "System timer - fires every Sunday", agent: "system" },
+      // Monthly timers
+      { channel: "system.timer.monthly.january", description: "System timer - fires on the 1st of January", agent: "system" },
+      { channel: "system.timer.monthly.february", description: "System timer - fires on the 1st of February", agent: "system" },
+      { channel: "system.timer.monthly.march", description: "System timer - fires on the 1st of March", agent: "system" },
+      { channel: "system.timer.monthly.april", description: "System timer - fires on the 1st of April", agent: "system" },
+      { channel: "system.timer.monthly.may", description: "System timer - fires on the 1st of May", agent: "system" },
+      { channel: "system.timer.monthly.june", description: "System timer - fires on the 1st of June", agent: "system" },
+      { channel: "system.timer.monthly.july", description: "System timer - fires on the 1st of July", agent: "system" },
+      { channel: "system.timer.monthly.august", description: "System timer - fires on the 1st of August", agent: "system" },
+      { channel: "system.timer.monthly.september", description: "System timer - fires on the 1st of September", agent: "system" },
+      { channel: "system.timer.monthly.october", description: "System timer - fires on the 1st of October", agent: "system" },
+      { channel: "system.timer.monthly.november", description: "System timer - fires on the 1st of November", agent: "system" },
+      { channel: "system.timer.monthly.december", description: "System timer - fires on the 1st of December", agent: "system" },
+      // Yearly timer
+      { channel: "system.timer.yearly", description: "System timer - fires on January 1st each year", agent: "system" }
+    ];
+    
+    if (isGlobalList) {
+      // For global list, include system channels
+      const advertisedChannels = result.channels || [];
+      const allChannels = [...systemChannels, ...advertisedChannels];
       
-      for (const ch of result.channels) {
-        console.log(`  ${ch.channel}`);
-        if (ch.description) {
-          const shortDesc = ch.description.length > 60 
-            ? ch.description.substring(0, 60) + "..." 
-            : ch.description;
-          console.log(`    Description: ${shortDesc}`);
+      if (allChannels.length === 0) {
+        console.log("No channels found.");
+      } else {
+        console.log(`\nAll Channels: ${allChannels.length}\n`);
+        
+        // Group by agent
+        const byAgent: Record<string, typeof allChannels> = {};
+        for (const ch of allChannels) {
+          const agent = ch.agent || "unknown";
+          if (!byAgent[agent]) byAgent[agent] = [];
+          byAgent[agent].push(ch);
         }
-        if (ch.schema) {
-          const schemaType = typeof ch.schema === "string" ? "[external]" : "[inline]";
-          console.log(`    Schema: ${schemaType}`);
+        
+        // Print system channels first
+        if (byAgent["system"]) {
+          console.log("System Channels:");
+          for (const ch of byAgent["system"]) {
+            console.log(`  ${ch.channel}`);
+            if (ch.description) {
+              console.log(`    ${ch.description}`);
+            }
+          }
+          console.log();
+          delete byAgent["system"];
         }
-        console.log();
+        
+        // Print agent channels
+        for (const [agent, channels] of Object.entries(byAgent)) {
+          console.log(`${agent}:`);
+          for (const ch of channels) {
+            console.log(`  ${ch.channel}`);
+            if (ch.description) {
+              const shortDesc = ch.description.length > 60 
+                ? ch.description.substring(0, 60) + "..." 
+                : ch.description;
+              console.log(`    Description: ${shortDesc}`);
+            }
+            if (ch.schema) {
+              const schemaType = typeof ch.schema === "string" ? "[external]" : "[inline]";
+              console.log(`    Schema: ${schemaType}`);
+            }
+          }
+          console.log();
+        }
+      }
+    } else {
+      // Agent-specific list
+      const agentChannels = result.channels || [];
+      if (agentChannels.length === 0) {
+        console.log(`No advertised channels for agent: ${targetAgent}`);
+      } else {
+        console.log(`\nAgent: ${targetAgent}`);
+        console.log(`Channels: ${agentChannels.length}\n`);
+        
+        for (const ch of agentChannels) {
+          console.log(`  ${ch.channel}`);
+          if (ch.description) {
+            const shortDesc = ch.description.length > 60 
+              ? ch.description.substring(0, 60) + "..." 
+              : ch.description;
+            console.log(`    Description: ${shortDesc}`);
+          }
+          if (ch.schema) {
+            const schemaType = typeof ch.schema === "string" ? "[external]" : "[inline]";
+            console.log(`    Schema: ${schemaType}`);
+          }
+          console.log();
+        }
       }
     }
     process.exit(0);
@@ -946,8 +1043,8 @@ if (command === "advertise") {
     const channel = subArgs[0];
     
     if (!channel) {
-      console.error("Usage: claw advertise show <channel>");
-      console.error("Example: claw advertise show agent.myuser.updates");
+      console.error("Usage: claw.events advertise show <channel>");
+      console.error("Example: claw.events advertise show agent.myuser.updates");
       process.exit(1);
     }
     
@@ -978,13 +1075,85 @@ if (command === "advertise") {
     process.exit(0);
   }
   
+  if (subcommand === "search" || subcommand === "find") {
+    handled = true;
+    const query = subArgs[0];
+    const limit = parseFlagValue(subArgs, "--limit") ?? parseFlagValue(subArgs, "-l") ?? "20";
+    
+    if (!query) {
+      console.error("Usage: claw.events advertise search <query> [--limit <n>]");
+      console.error("       claw.events advertise search weather");
+      console.error("       claw.events advertise search trading --limit 50");
+      process.exit(1);
+    }
+    
+    const response = await fetch(`${apiUrl}/api/advertise/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+    
+    if (!response.ok) {
+      const text = await response.text();
+      console.error("Search failed:", text);
+      process.exit(1);
+    }
+    
+    const result = await response.json();
+    
+    if (verbose) {
+      console.error("DEBUG: API response:", JSON.stringify(result, null, 2));
+    }
+    
+    // Handle error responses
+    if (!result.ok) {
+      console.error("Search failed:", result.error || "Unknown error");
+      process.exit(1);
+    }
+    
+    // Handle missing results array
+    if (!result.results || !Array.isArray(result.results)) {
+      console.error("Invalid response from server: missing results array");
+      if (verbose) {
+        console.error("Response:", JSON.stringify(result, null, 2));
+      }
+      process.exit(1);
+    }
+    
+    const count = result.count ?? result.results.length;
+    const total = result.total ?? count;
+    
+    if (count === 0) {
+      console.log(`No channels found matching "${query}"`);
+    } else {
+      console.log(`\nFound ${count} channel${count === 1 ? "" : "s"} matching "${query}"`);
+      if (total > count) {
+        console.log(`(showing ${count} of ${total} total matches)`);
+      }
+      console.log();
+      
+      for (const ch of result.results) {
+        console.log(`  ${ch.channel}`);
+        if (ch.description) {
+          const shortDesc = ch.description.length > 80 
+            ? ch.description.substring(0, 80) + "..." 
+            : ch.description;
+          console.log(`    ${shortDesc}`);
+        }
+        if (ch.schema) {
+          const schemaType = typeof ch.schema === "string" ? "[external schema]" : "[schema]";
+          console.log(`    ${schemaType}`);
+        }
+        console.log();
+      }
+    }
+    process.exit(0);
+  }
+  
   // If no subcommand matched, show advertise help
   if (!handled) {
     handled = true;
-    console.log(`claw advertise commands:
+    console.log(`claw.events advertise commands:
   set --channel <ch> [--desc <text>] [--schema <json/url>]
   delete --channel <ch> (or: rm, remove)
-  list [agent] (or: ls)
+  list [agent] (or: ls)  # Without agent: shows all public/system channels
+  search <query> [--limit <n>] (or: find)
   show <channel> (or: get, view)`);
     process.exit(0);
   }
