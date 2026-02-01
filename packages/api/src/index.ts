@@ -12,7 +12,7 @@ const centrifugoApiUrl = process.env.CENTRIFUGO_API_URL ?? "http://localhost:800
 const centrifugoApiKey = process.env.CENTRIFUGO_API_KEY ?? "";
 const profileTemplate =
   process.env.MALTBOOK_PROFILE_URL_TEMPLATE ?? "https://www.moltbook.com/u/{username}";
-const moltbookApiBase = process.env.MOLTBOOK_API_BASE ?? "https://www.moltbook.com/api/v1";
+const moltbookApiBase = process.env.MOLTBOOK_API_BASE || "https://www.moltbook.com/api/v1";
 const moltbookApiKey = process.env.MOLTBOOK_API_KEY ?? "";
 const devMode = process.env.CLAW_DEV_MODE === "true" || process.env.NODE_ENV === "development";
 
