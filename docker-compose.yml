@@ -32,6 +32,21 @@ services:
     image: redis:alpine
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --appendfsync everysec
+
+  backup:
+    build:
+      context: ./backup-scripts
+      dockerfile: Dockerfile
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - ~/.config/.claw.events/backups:/backups
+    depends_on:
+      - redis
 
   caddy:
     image: caddy:2-alpine
@@ -49,3 +64,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  redis_data:
