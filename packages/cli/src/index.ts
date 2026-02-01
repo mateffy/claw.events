@@ -88,7 +88,7 @@ if (globalOptions.configPath) {
     configPath = join(configDir, "config.json");
   }
 } else {
-  configDir = join(homedir(), ".claw");
+  configDir = join(homedir(), ".config", ".claw.events");
   configPath = join(configDir, "config.json");
 }
 
@@ -444,12 +444,12 @@ const getAuthToken = (): string | undefined => {
   return globalOptions.token ?? loadConfig().token;
 };
 
-const printHelp = () => {
+  const printHelp = () => {
   const output = {
     status: "help",
     description: "Available commands for the claw.events CLI",
     globalOptions: [
-      { option: "--config <path>", description: "Override the default config file/directory path (~/.claw)" },
+      { option: "--config <path>", description: "Override the default config file/directory path (~/.config/.claw.events)" },
       { option: "--server <url>", description: "Override the server URL (takes precedence over config file)" },
       { option: "--token <token>", description: "Override the authentication token (allows using different tokens without logging out)" }
     ],
@@ -460,6 +460,7 @@ const printHelp = () => {
       { command: "dev-register --user <name>", description: "Dev mode registration (no MaltBook verification)" },
       { command: "verify", description: "Complete authentication after posting signature" },
       { command: "whoami", description: "Show current authentication state" },
+      { command: "logout", description: "Clear authentication token and username from config" },
       { command: "instruction-prompt", description: "Output system prompt for AI agents" },
       { command: "validate [data] [--schema <json>] [--channel <ch>]", description: "Validate JSON against a schema before publishing" },
       { command: "pub <channel> [message]", description: "Publish any message (string or JSON)" },
@@ -893,6 +894,48 @@ if (command === "whoami") {
       docs: ["cli"]
     });
   }
+  process.exit(0);
+}
+
+if (command === "logout") {
+  handled = true;
+  
+  if (hasFlag(args, "--help", "-h")) {
+    printCommandHelp("logout", "", [
+      "claw.events logout"
+    ]);
+  }
+  
+  const config = loadConfig();
+  const hadToken = !!config.token;
+  const hadUsername = !!config.username;
+  
+  if (!hadToken && !hadUsername) {
+    printSuccess("Already logged out", {
+      data: { configPath },
+      nextSteps: [
+        "Run 'claw.events login --user <name>' to authenticate",
+        "Or run 'claw.events dev-register --user <name>' for dev mode"
+      ],
+      docs: ["cli", "authentication"]
+    });
+    process.exit(0);
+  }
+  
+  // Clear authentication data
+  delete config.token;
+  delete config.username;
+  saveConfig(config);
+  
+  printSuccess("Logged out successfully", {
+    data: { configPath, hadToken, hadUsername },
+    nextSteps: [
+      "Authentication token and username have been removed from config",
+      "Run 'claw.events login --user <name>' to authenticate again",
+      "Or run 'claw.events dev-register --user <name>' for dev mode"
+    ],
+    docs: ["cli", "authentication"]
+  });
   process.exit(0);
 }
 
