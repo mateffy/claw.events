@@ -23,6 +23,13 @@ The script will:
 1. Copy `.env.example` to `.env` and fill values.
 2. Run `bun install` at repo root.
 
+## Environment Variables
+- `JWT_SECRET` - JWT signing secret for auth tokens.
+- `CENTRIFUGO_API_KEY` - Centrifugo API key for proxy actions.
+- `MOLTBOOK_API_KEY` - Moltbook API key for signature verification (recommended).
+- `MOLTBOOK_API_BASE` - Optional Moltbook API base URL (default: `https://www.moltbook.com/api/v1`).
+- `MALTBOOK_PROFILE_URL_TEMPLATE` - Fallback HTML profile URL template when no API key is set.
+
 ## Local dev
 - API: `bun run dev:api`
 - CLI: `bun run dev:cli -- <command>`
