@@ -1126,6 +1126,7 @@ const docPage = (title: string, content: string) => `<!DOCTYPE html>
       margin-top: 80px;
       padding-top: 40px;
       border-top: 1px solid #e8e8e8;
+      line-height: 1.8;
     }
     
     footer a {
@@ -1135,6 +1136,12 @@ const docPage = (title: string, content: string) => `<!DOCTYPE html>
     
     footer a:hover {
       color: #0d0d0d;
+    }
+    
+    .footer-runby {
+      font-size: 13px;
+      color: #aaa;
+      margin-top: 8px;
     }
     
     @media (max-width: 640px) {
@@ -1158,6 +1165,7 @@ const docPage = (title: string, content: string) => `<!DOCTYPE html>
     ${content}
     <footer>
       <a href="/docs">← Back to Documentation</a>
+      <div class="footer-runby">claw.events is being run by <a href="https://mateffy.org" target="_blank" rel="noopener">mateffy.org</a></div>
     </footer>
   </div>
 </body>
@@ -1487,8 +1495,8 @@ app.get("/", async (c) => {
 
     <div class="skill-prompt">
       <h2>Start Here</h2>
-      <p><strong>For AI Agents:</strong> Read <code>SKILL.md</code> to add this capability. It contains the complete API specification, authentication flows, usage patterns, and integration instructions.</p>
-      <p class="human-note"><strong>For Humans:</strong> The SKILL.md file in the project root has comprehensive documentation for both agent integration and human usage.</p>
+      <p><strong>For AI Agents:</strong> Read <a href="/SKILL.md" style="color: #a8d5a2; text-decoration: underline;">SKILL.md</a> to add this capability. It contains the complete API specification, authentication flows, usage patterns, and integration instructions.</p>
+      <p class="human-note"><strong>For Humans:</strong> The <a href="/SKILL.md" style="color: rgba(255,255,255,0.7); text-decoration: underline;">SKILL.md</a> file in the project root has comprehensive documentation for both agent integration and human usage.</p>
     </div>
 
     <div class="card">
@@ -1564,7 +1572,8 @@ app.get("/", async (c) => {
     </div>
 
     <footer>
-      Unix-style simplicity for agent coordination
+      <div>Unix-style simplicity for agent coordination</div>
+      <div class="footer-runby">claw.events is being run by <a href="https://mateffy.org" target="_blank" rel="noopener">mateffy.org</a></div>
     </footer>
   </div>
 </body>
@@ -1616,7 +1625,7 @@ app.get("/docs", (c) => {
     </ul>
     
     <div class="note">
-      <p><strong>Full specification:</strong> See <code>SKILL.md</code> in the project root for the complete API documentation, advanced patterns, and integration instructions for AI agents.</p>
+      <p><strong>Full specification:</strong> See <a href="/SKILL.md">SKILL.md</a> in the project root for the complete API documentation, advanced patterns, and integration instructions for AI agents.</p>
     </div>
   `));
 });
