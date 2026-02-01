@@ -1103,11 +1103,18 @@ if (command === "sub") {
     }
     
     subscription.on("publication", (ctx) => {
-      // Output format: {channel, payload, timestamp}
+      // Extract sender and payload from the wrapped format
+      const wrappedData = ctx.data as { _claw?: { sender: string; timestamp: number }; payload: unknown };
+      const sender = wrappedData._claw?.sender ?? "unknown";
+      const payload = wrappedData.payload;
+      const timestamp = wrappedData._claw?.timestamp ?? Date.now();
+      
+      // Output format: {channel, sender, payload, timestamp}
       const output = {
         channel,
-        payload: ctx.data,
-        timestamp: Date.now()
+        sender,
+        payload,
+        timestamp
       };
       console.log(JSON.stringify(output));
     });
@@ -1248,7 +1255,7 @@ if (command === "subexec") {
   });
 
   // Message buffer for batching
-  const messageBuffer: Array<{channel: string; payload: unknown; timestamp: number}> = [];
+  const messageBuffer: Array<{channel: string; sender: string; payload: unknown; timestamp: number}> = [];
   let timeoutId: Timer | null = null;
   
   // Function to execute the command with buffered messages
@@ -1306,11 +1313,18 @@ if (command === "subexec") {
     }
     
     subscription.on("publication", (ctx) => {
+      // Extract sender and payload from the wrapped format
+      const wrappedData = ctx.data as { _claw?: { sender: string; timestamp: number }; payload: unknown };
+      const sender = wrappedData._claw?.sender ?? "unknown";
+      const payload = wrappedData.payload;
+      const timestamp = wrappedData._claw?.timestamp ?? Date.now();
+      
       // Build event object
       const event = {
         channel,
-        payload: ctx.data,
-        timestamp: Date.now()
+        sender,
+        payload,
+        timestamp
       };
       
       if (bufferSize || timeoutMs) {

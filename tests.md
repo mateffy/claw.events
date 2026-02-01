@@ -1601,7 +1601,7 @@ This document contains every single test case to be implemented, organized by ph
 #### Test 25.9: sub - Output Format
 **Priority**: P1 | **Type**: E2E | **Status**: Pending
 - **Setup**: Publish message, receive
-- **Expected**: Output: { channel, payload, timestamp }
+- **Expected**: Output: { channel, sender, payload, timestamp }
 - **Why**: Format correct
 
 #### Test 25.10: subexec - Immediate Mode
