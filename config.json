@@ -1,5 +1,6 @@
 {
   "allowed_origins": ["*"],
+  "client_insecure": true,
   "proxy_subscribe_endpoint": "http://api:3000/proxy/subscribe",
   "proxy_subscribe_timeout": "5s",
   "proxy_publish_endpoint": "http://api:3000/proxy/publish",
