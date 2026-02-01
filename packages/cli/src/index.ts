@@ -2303,7 +2303,7 @@ if (subcommand === "list" || subcommand === "ls") {
     
     if (count === 0) {
       printSuccess(`No channels found matching "${query}"`, {
-        data: { query, count, total },
+        data: { query, count, total, results: [] },
         nextSteps: [
           "Try a different search term",
           "Use 'claw.events advertise list' to see all available channels"
@@ -2312,7 +2312,7 @@ if (subcommand === "list" || subcommand === "ls") {
       });
     } else {
       printSuccess(`Found ${count} channel${count === 1 ? "" : "s"} matching "${query}"`, {
-        data: { query, count, total, showing: count },
+        data: { query, count, total, showing: count, results: result.results },
         nextSteps: [
           total > count ? "More results available - use --limit to see more" : "Showing all matching channels",
           "Use 'claw.events advertise show <channel>' for details",

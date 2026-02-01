@@ -64,7 +64,8 @@ describe("Publishing Endpoint Tests", () => {
       k.startsWith("ratelimit:") || 
       k.startsWith("locked:") || 
       k.startsWith("perm:") ||
-      k.startsWith("stats:")
+      k.startsWith("stats:") ||
+      k.startsWith("advertise:")
     );
     if (testKeys.length > 0) {
       await redis.del(testKeys);
@@ -722,6 +723,323 @@ describe("Publishing Endpoint Tests", () => {
 
       // Should handle gracefully (400 or error)
       expect([400, 422, 500]).toContain(response.status);
+    });
+  });
+
+  describe("POST /api/publish - Schema Validation", () => {
+    beforeEach(async () => {
+      // Clean up advertisement keys
+      const keys = await redis.keys("advertise:*");
+      if (keys.length > 0) {
+        await redis.del(keys);
+      }
+    });
+
+    it("Test 11.25: POST /api/publish - Valid Payload Matches Schema", async () => {
+      const token = await createTestToken("alice", jwtSecret);
+
+      // Set up advertisement with schema
+      const schema = {
+        type: "object",
+        properties: {
+          message: { type: "string" },
+          count: { type: "integer" }
+        },
+        required: ["message"]
+      };
+
+      await fetch(`${TEST_API_URL}/api/advertise`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.updates",
+          description: "Test channel",
+          schema
+        }),
+      });
+
+      const mockFetch = mock(fetch, () => {
+        return Promise.resolve(new Response(
+          JSON.stringify({ result: { published: true } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        ));
+      });
+
+      // Valid payload
+      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.updates",
+          payload: { message: "Hello", count: 42 }
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.ok).toBe(true);
+
+      mockFetch.restore();
+    });
+
+    it("Test 11.26: POST /api/publish - Invalid Payload Fails Schema Validation", async () => {
+      const token = await createTestToken("alice", jwtSecret);
+
+      // Set up advertisement with schema
+      const schema = {
+        type: "object",
+        properties: {
+          message: { type: "string" },
+          count: { type: "integer" }
+        },
+        required: ["message"]
+      };
+
+      await fetch(`${TEST_API_URL}/api/advertise`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.updates",
+          description: "Test channel",
+          schema
+        }),
+      });
+
+      // Invalid payload (missing required field, wrong type)
+      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.updates",
+          payload: { count: "not a number" }
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toContain("Schema validation failed");
+      expect(body.validation_errors).toBeDefined();
+      expect(Array.isArray(body.validation_errors)).toBe(true);
+      expect(body.validation_errors.length).toBeGreaterThan(0);
+    });
+
+    it("Test 11.27: POST /api/publish - No Schema Defined Allows Any Payload", async () => {
+      const token = await createTestToken("alice", jwtSecret);
+
+      // No advertisement set up for this channel
+
+      const mockFetch = mock(fetch, () => {
+        return Promise.resolve(new Response(
+          JSON.stringify({ result: { published: true } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        ));
+      });
+
+      // Any payload should work
+      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.unstructured",
+          payload: { anything: "goes", here: 123, nested: { data: true } }
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.ok).toBe(true);
+
+      mockFetch.restore();
+    });
+
+    it("Test 11.28: POST /api/publish - Schema with Array Validation", async () => {
+      const token = await createTestToken("alice", jwtSecret);
+
+      // Set up advertisement with array schema
+      const schema = {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "integer" },
+            name: { type: "string", minLength: 1 }
+          },
+          required: ["id", "name"]
+        }
+      };
+
+      await fetch(`${TEST_API_URL}/api/advertise`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.items",
+          description: "Items channel",
+          schema
+        }),
+      });
+
+      const mockFetch = mock(fetch, () => {
+        return Promise.resolve(new Response(
+          JSON.stringify({ result: { published: true } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        ));
+      });
+
+      // Valid array payload
+      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.items",
+          payload: [
+            { id: 1, name: "First" },
+            { id: 2, name: "Second" }
+          ]
+        }),
+      });
+
+      expect(response.status).toBe(200);
+
+      mockFetch.restore();
+    });
+
+    it("Test 11.29: POST /api/publish - Schema with Enum Validation", async () => {
+      const token = await createTestToken("alice", jwtSecret);
+
+      // Set up advertisement with enum schema
+      const schema = {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["pending", "active", "completed"]
+          }
+        },
+        required: ["status"]
+      };
+
+      await fetch(`${TEST_API_URL}/api/advertise`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.status",
+          description: "Status updates",
+          schema
+        }),
+      });
+
+      // Valid enum value
+      const mockFetch = mock(fetch, () => {
+        return Promise.resolve(new Response(
+          JSON.stringify({ result: { published: true } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        ));
+      });
+
+      const response1 = await fetch(`${TEST_API_URL}/api/publish`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.status",
+          payload: { status: "active" }
+        }),
+      });
+
+      expect(response1.status).toBe(200);
+      mockFetch.restore();
+
+      // Invalid enum value
+      const response2 = await fetch(`${TEST_API_URL}/api/publish`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.status",
+          payload: { status: "invalid_status" }
+        }),
+      });
+
+      expect(response2.status).toBe(400);
+      const body = await response2.json();
+      expect(body.error).toContain("Schema validation failed");
+    });
+
+    it("Test 11.30: POST /api/publish - Null Payload Skips Validation", async () => {
+      const token = await createTestToken("alice", jwtSecret);
+
+      // Set up advertisement with schema
+      const schema = {
+        type: "object",
+        properties: {
+          message: { type: "string" }
+        }
+      };
+
+      await fetch(`${TEST_API_URL}/api/advertise`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.nullable",
+          description: "Nullable channel",
+          schema
+        }),
+      });
+
+      const mockFetch = mock(fetch, () => {
+        return Promise.resolve(new Response(
+          JSON.stringify({ result: { published: true } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        ));
+      });
+
+      // Null payload should skip validation and succeed
+      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          channel: "agent.alice.nullable",
+          payload: null
+        }),
+      });
+
+      expect(response.status).toBe(200);
+
+      mockFetch.restore();
     });
   });
 });

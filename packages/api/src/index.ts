@@ -74,25 +74,8 @@ const trackMessage = async () => {
 };
 
 const getStats = async () => {
-  // Get active WebSocket connections from Centrifugo
-  let activeConnections = 0;
-  try {
-    const response = await fetch(`${centrifugoApiUrl}/info`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": centrifugoApiKey
-      },
-      body: JSON.stringify({})
-    });
-    if (response.ok) {
-      const data = await response.json() as { result?: { nodes?: Array<{ num_clients?: number }> } };
-      // Sum num_clients across all nodes
-      activeConnections = data.result?.nodes?.reduce((sum, node) => sum + (node.num_clients ?? 0), 0) ?? 0;
-    }
-  } catch (error) {
-    console.error("Failed to get Centrifugo stats:", error);
-  }
+  // Get registered agents count from Redis set
+  const registeredAgents = await redis.sCard(STATS_AGENTS_KEY);
   
   const totalMessages = parseInt((await redis.get(STATS_TOTAL_MESSAGES_KEY)) ?? "0", 10);
   
@@ -107,7 +90,7 @@ const getStats = async () => {
   const messagesPerMin = Math.round((currentMinCount + prevMinCount) / 2);
   
   return {
-    agents: activeConnections,
+    agents: registeredAgents || 0,
     totalMessages: totalMessages || 0,
     messagesPerMin: messagesPerMin || currentMinCount
   };
@@ -150,6 +133,132 @@ const hasChannelPermission = async (owner: string, topic: string, user: string):
 
 const respondProxyAllow = () => ({ result: {} });
 const respondProxyDeny = () => ({ error: { code: 403, message: "permission denied" } });
+
+// ============================================================================
+// JSON Schema Validation
+// ============================================================================
+
+type SchemaValidationError = {
+  path: string;
+  message: string;
+};
+
+/**
+ * Validate data against a JSON Schema
+ * Supports: type, properties, required, items, enum, minimum, maximum, minLength, maxLength
+ */
+const validateJsonSchema = (data: unknown, schema: unknown): SchemaValidationError[] => {
+  const errors: SchemaValidationError[] = [];
+
+  if (typeof schema !== "object" || schema === null) {
+    return errors;
+  }
+
+  const s = schema as Record<string, unknown>;
+
+  // Validate type
+  if (s.type) {
+    const expectedType = s.type as string;
+    let actualType: string = typeof data;
+    if (Array.isArray(data)) actualType = "array";
+    if (data === null) actualType = "null";
+
+    if (expectedType === "integer") {
+      if (typeof data !== "number" || !Number.isInteger(data)) {
+        errors.push({ path: "", message: `Expected integer, got ${actualType}` });
+      }
+    } else if (expectedType === "number") {
+      if (typeof data !== "number") {
+        errors.push({ path: "", message: `Expected number, got ${actualType}` });
+      }
+    } else if (expectedType !== actualType) {
+      errors.push({ path: "", message: `Expected type ${expectedType}, got ${actualType}` });
+    }
+  }
+
+  // Validate object properties
+  if (s.type === "object" && s.properties && typeof data === "object" && data !== null) {
+    const properties = s.properties as Record<string, unknown>;
+    const dataObj = data as Record<string, unknown>;
+
+    // Check required fields
+    if (s.required && Array.isArray(s.required)) {
+      for (const required of s.required) {
+        if (!(required in dataObj)) {
+          errors.push({ path: required, message: `Missing required field: ${required}` });
+        }
+      }
+    }
+
+    // Validate each property
+    for (const [key, value] of Object.entries(dataObj)) {
+      if (properties[key]) {
+        const propErrors = validateJsonSchema(value, properties[key]);
+        for (const err of propErrors) {
+          errors.push({ path: err.path ? `${key}.${err.path}` : key, message: err.message });
+        }
+      }
+    }
+  }
+
+  // Validate array items
+  if (s.type === "array" && s.items && Array.isArray(data)) {
+    for (let i = 0; i < data.length; i++) {
+      const itemErrors = validateJsonSchema(data[i], s.items);
+      for (const err of itemErrors) {
+        errors.push({ path: err.path ? `[${i}].${err.path}` : `[${i}]`, message: err.message });
+      }
+    }
+  }
+
+  // Validate enum
+  if (s.enum && Array.isArray(s.enum)) {
+    if (!s.enum.includes(data)) {
+      errors.push({ path: "", message: `Value must be one of: ${s.enum.join(", ")}` });
+    }
+  }
+
+  // Validate number constraints
+  if (typeof data === "number") {
+    if (s.minimum !== undefined && data < (s.minimum as number)) {
+      errors.push({ path: "", message: `Value must be >= ${s.minimum}` });
+    }
+    if (s.maximum !== undefined && data > (s.maximum as number)) {
+      errors.push({ path: "", message: `Value must be <= ${s.maximum}` });
+    }
+  }
+
+  // Validate string constraints
+  if (typeof data === "string") {
+    if (s.minLength !== undefined && data.length < (s.minLength as number)) {
+      errors.push({ path: "", message: `String must be at least ${s.minLength} characters` });
+    }
+    if (s.maxLength !== undefined && data.length > (s.maxLength as number)) {
+      errors.push({ path: "", message: `String must be at most ${s.maxLength} characters` });
+    }
+  }
+
+  return errors;
+};
+
+/**
+ * Fetch the JSON schema for a channel from its advertisement
+ */
+const getChannelSchema = async (channel: string): Promise<unknown | null> => {
+  const agentChannel = parseAgentChannel(channel);
+  if (!agentChannel) return null;
+
+  const key = `advertise:${agentChannel.owner}:${agentChannel.topic}`;
+  const data = await redis.get(key);
+  if (!data) return null;
+
+  try {
+    const parsed = JSON.parse(data);
+    return parsed.schema ?? null;
+  } catch {
+    return null;
+  }
+};
 
 app.post("/auth/init", async (c) => {
   const body = await c.req.json<{ username?: string }>();
@@ -604,6 +713,20 @@ app.post("/api/publish", async (c) => {
     }
   }
 
+  // Validate payload against advertised schema if one exists
+  if (payload !== undefined && payload !== null) {
+    const schema = await getChannelSchema(channel);
+    if (schema) {
+      const validationErrors = validateJsonSchema(payload, schema);
+      if (validationErrors.length > 0) {
+        return c.json({
+          error: "Schema validation failed",
+          validation_errors: validationErrors
+        }, 400);
+      }
+    }
+  }
+
   if (!centrifugoApiKey) {
     return c.json({ error: "CENTRIFUGO_API_KEY not configured" }, 500);
   }
@@ -930,6 +1053,12 @@ app.get("/api/locks/:agent", async (c) => {
 });
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+// Get list of registered agents
+app.get("/agents", async (c) => {
+  const agents = await redis.sMembers(STATS_AGENTS_KEY);
+  return c.json({ agents: agents.sort(), count: agents.length });
+});
 
 // Serve OG image
 app.get("/og.jpeg", async (c) => {
