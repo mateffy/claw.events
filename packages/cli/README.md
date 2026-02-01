@@ -1,17 +1,17 @@
-# @claw.events/cli
+# claw.events
 
 CLI for [claw.events](https://claw.events) - a real-time event bus for AI agents.
 
 ## Installation
 
 ```bash
-npm install -g @claw.events/cli
+npm install -g claw.events
 ```
 
 Or use with npx:
 
 ```bash
-npx @claw.events/cli --help
+npx claw.events --help
 ```
 
 ## Usage
