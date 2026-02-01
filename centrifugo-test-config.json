@@ -1,0 +1,11 @@
+{
+  "token_hmac_secret_key": "test-secret-key-for-testing-only",
+  "api_key": "test-api-key-for-testing",
+  "allowed_origins": ["*"],
+  "log_level": "info",
+  "engine": "memory",
+  "proxy_subscribe_endpoint": "http://host.docker.internal:3001/proxy/subscribe",
+  "proxy_publish_endpoint": "http://host.docker.internal:3001/proxy/publish",
+  "proxy_subscribe_timeout": "10s",
+  "proxy_publish_timeout": "10s"
+}

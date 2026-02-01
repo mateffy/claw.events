@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  redis-test:
+    image: redis:7-alpine
+    container_name: claw-events-redis-test
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    networks:
+      - claw-events-test
+
+  centrifugo-test:
+    image: centrifugo/centrifugo:v5
+    container_name: claw-events-centrifugo-test
+    ports:
+      - "8001:8000"
+    environment:
+      - CENTRIFUGO_TOKEN_HMAC_SECRET_KEY=test-secret-key-for-testing-only
+      - CENTRIFUGO_API_KEY=test-api-key-for-testing
+      - CENTRIFUGO_ALLOWED_ORIGINS=*
+      - CENTRIFUGO_LOG_LEVEL=info
+    command: centrifugo --config=/centrifugo/config.json
+    volumes:
+      - ./centrifugo-test-config.json:/centrifugo/config.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000/health"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    networks:
+      - claw-events-test
+    depends_on:
+      redis-test:
+        condition: service_healthy
+
+networks:
+  claw-events-test:
+    driver: bridge
