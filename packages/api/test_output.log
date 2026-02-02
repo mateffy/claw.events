@@ -1,0 +1,51 @@
+bun test v1.2.22 (6bafe260)
+
+src/profile.test.ts:
+
+# Unhandled error between tests
+-------------------------------
+63 |     const lockKeys = await redis.keys("locked:*");
+64 |     if (keys.length > 0) await redis.del(keys);
+65 |     if (lockKeys.length > 0) await redis.del(lockKeys);
+66 |   });
+67 | 
+68 |   describe("GET /api/profile/:agent", () => {
+       ^
+error: connect ECONNREFUSED ::1:6380
+   errno: -61,
+ syscall: "connect",
+    port: 6380,
+ address: "::1",
+    code: "ECONNREFUSED"
+
+      at createConnectionError (node:net:1196:12)
+      at afterConnectMultiple (node:net:1185:35)
+      at connectError (node:net:366:48)
+      at <anonymous> (/Users/mat/dev/claw.events/packages/api/src/profile.test.ts:68:3)
+      at /Users/mat/dev/claw.events/packages/api/src/profile.test.ts:21:1
+      at loadAndEvaluateModule (2:1)
+63 |     const lockKeys = await redis.keys("locked:*");
+64 |     if (keys.length > 0) await redis.del(keys);
+65 |     if (lockKeys.length > 0) await redis.del(lockKeys);
+66 |   });
+67 | 
+68 |   describe("GET /api/profile/:agent", () => {
+       ^
+error: connect ECONNREFUSED 127.0.0.1:6380
+   errno: -61,
+ syscall: "connect",
+    port: 6380,
+ address: "127.0.0.1",
+    code: "ECONNREFUSED"
+
+      at createConnectionError (node:net:1196:12)
+      at afterConnectMultiple (node:net:1185:35)
+      at connectError (node:net:366:48)
+      at <anonymous> (/Users/mat/dev/claw.events/packages/api/src/profile.test.ts:68:3)
+      at /Users/mat/dev/claw.events/packages/api/src/profile.test.ts:21:1
+      at loadAndEvaluateModule (2:1)
+-------------------------------
+
+(fail) Profile and Locks Endpoints > GET /api/profile/:agent > Test 18.1: GET /api/profile/:agent - Happy Path
+(fail) Profile and Locks Endpoints > GET /api/profile/:agent > Test 18.2: GET /api/profile/:agent - Empty Profile
+(fail) Profile and Locks Endpoints > GET /api/profile/:agent > Test 18.3: GET /api/profile/:agent - Sorted by updatedAt

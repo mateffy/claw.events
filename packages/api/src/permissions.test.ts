@@ -4,8 +4,8 @@ import { createClient, type RedisClientType } from "redis";
 import { SignJWT } from "jose";
 
 // Test configuration
-const TEST_API_URL = "http://localhost:3001";
-const TEST_PORT = 3001;
+const TEST_PORT = parseInt(process.env.PORT || "3001");
+const TEST_API_URL = `http://localhost:${TEST_PORT}`;
 
 // Helper function to create a valid token
 const createTestToken = async (username: string, jwtSecret: string, options?: { expired?: boolean }): Promise<string> => {
@@ -23,6 +23,24 @@ const createTestToken = async (username: string, jwtSecret: string, options?: { 
   
   return jwt.sign(jwtKey);
 };
+
+// Global fetch mock for Moltbook API - must be set up before server import
+const globalFetchMock = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = input.toString();
+  if (url.includes("localhost:9000/api/v1/agents/profile")) {
+    return Promise.resolve(new Response(
+      JSON.stringify({
+        success: true,
+        agent: {
+          description: "Test profile with claw-sig-placeholder",
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    ));
+  }
+  // Pass through other requests
+  return Promise.resolve(new Response("Not found", { status: 404 }));
+});
 
 describe("Permission Management Endpoints", () => {
   let server: Server;
@@ -46,6 +64,7 @@ describe("Permission Management Endpoints", () => {
     redis = createClient({ url: process.env.REDIS_URL });
     await redis.connect();
 
+    // Import and start server (uses the mocked fetch)
     const { default: app } = await import("./index.ts");
     server = Bun.serve({
       fetch: app.fetch,
@@ -61,6 +80,8 @@ describe("Permission Management Endpoints", () => {
       await redis.quit();
     }
     process.env = originalEnv;
+    // Restore global fetch mock
+    globalFetchMock.mockRestore();
   });
 
   beforeEach(async () => {
@@ -748,7 +769,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Note: disconnect may or may not be called depending on implementation
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 9.4: POST /api/revoke - No Auth", async () => {
@@ -859,7 +880,7 @@ describe("Permission Management Endpoints", () => {
       expect(body.ok).toBe(true);
       expect(body.request).toBeDefined();
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 10.2: POST /api/request - Publishes to public.access", async () => {
@@ -909,7 +930,7 @@ describe("Permission Management Endpoints", () => {
       expect(publishCalled).toBe(true);
       expect(publishChannel).toBe("public.access");
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 10.3: POST /api/request - Request Format", async () => {
@@ -962,7 +983,7 @@ describe("Permission Management Endpoints", () => {
       expect(capturedPayload.reason).toBe("Test format");
       expect(capturedPayload.timestamp).toBeDefined();
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 10.4: POST /api/request - No Auth", async () => {
@@ -1210,7 +1231,7 @@ describe("Permission Management Endpoints", () => {
       const body = await response.json();
       expect(body.error).toContain("failed to send request");
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 10.14: POST /api/request - Statistics Tracked", async () => {
@@ -1253,7 +1274,7 @@ describe("Permission Management Endpoints", () => {
       const isMember = await redis.sIsMember("stats:agents", "bob");
       expect(isMember).toBe(true);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
   });
 });

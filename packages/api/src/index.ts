@@ -42,17 +42,148 @@ const createToken = async (username: string) => {
     .sign(jwtKey);
 };
 
+// ============================================================================
+// API Key Authentication System
+// ============================================================================
+
+const CLAIM_TTL_SECONDS = 24 * 60 * 60; // 24 hours
+const MAX_CLAIMS_PER_USER = 100;
+
+// Hash an API key using SHA-256 for storage
+const hashApiKey = (apiKey: string): string => {
+  return crypto.createHash("sha256").update(apiKey).digest("hex");
+};
+
+// Generate a new API key (JWT format)
+const generateApiKey = async (username: string): Promise<string> => {
+  // Indefinite API key - no expiration time
+  return new SignJWT({ type: "apikey" })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(username)
+    .setIssuedAt()
+    .sign(jwtKey);
+};
+
+// Store active API key for a user (replaces any existing key)
+const storeApiKey = async (username: string, apiKey: string): Promise<void> => {
+  const hashedKey = hashApiKey(apiKey);
+  const key = `apikey:${username}`;
+  const data = {
+    hashedKey,
+    createdAt: Date.now(),
+  };
+  await redis.set(key, JSON.stringify(data));
+};
+
+// Validate an API key against stored hash
+const validateApiKey = async (apiKey: string): Promise<string | null> => {
+  try {
+    const { payload } = await jwtVerify<AuthPayload>(apiKey, jwtKey);
+    const username = payload.sub;
+    if (!username) return null;
+
+    const stored = await redis.get(`apikey:${username}`);
+    if (!stored) return null;
+
+    const { hashedKey } = JSON.parse(stored);
+    const providedHash = hashApiKey(apiKey);
+
+    // Timing-safe comparison
+    if (hashedKey.length !== providedHash.length) return null;
+    const match = crypto.timingSafeEqual(
+      Buffer.from(hashedKey),
+      Buffer.from(providedHash)
+    );
+
+    return match ? username : null;
+  } catch {
+    return null;
+  }
+};
+
+// Revoke (delete) a user's API key
+const revokeApiKey = async (username: string): Promise<void> => {
+  await redis.del(`apikey:${username}`);
+};
+
+// Create a claim token for the auth flow
+const createClaim = async (username: string): Promise<string> => {
+  const claimToken = `claim-${crypto.randomBytes(16).toString("base64url")}`;
+  const hashedClaim = hashApiKey(claimToken);
+  const key = `claim:${username}:${hashedClaim}`;
+
+  const data = {
+    createdAt: Date.now(),
+  };
+
+  await redis.set(key, JSON.stringify(data), { EX: CLAIM_TTL_SECONDS });
+  return claimToken;
+};
+
+// Get count of pending claims for a user
+const getPendingClaimsCount = async (username: string): Promise<number> => {
+  const pattern = `claim:${username}:*`;
+  const keys = await redis.keys(pattern);
+  return keys.length;
+};
+
+// Get the oldest claim's expiry time
+const getNextClaimAvailableTime = async (username: string): Promise<number | null> => {
+  const pattern = `claim:${username}:*`;
+  const keys = await redis.keys(pattern);
+
+  if (keys.length === 0) return null;
+
+  let minTtl = Infinity;
+  for (const key of keys) {
+    const ttl = await redis.ttl(key);
+    if (ttl > 0 && ttl < minTtl) {
+      minTtl = ttl;
+    }
+  }
+
+  return minTtl === Infinity ? null : Date.now() + (minTtl * 1000);
+};
+
+// Validate a claim token and return username if valid
+const validateClaim = async (username: string, claimToken: string): Promise<boolean> => {
+  const hashedClaim = hashApiKey(claimToken);
+  const key = `claim:${username}:${hashedClaim}`;
+  const exists = await redis.exists(key);
+  return exists === 1;
+};
+
+// Delete a specific claim
+const deleteClaim = async (username: string, claimToken: string): Promise<void> => {
+  const hashedClaim = hashApiKey(claimToken);
+  const key = `claim:${username}:${hashedClaim}`;
+  await redis.del(key);
+};
+
+// Authentication middleware - supports both old JWTs (transition) and new API keys
 const requireAuth = async (authHeader?: string) => {
   if (!authHeader?.startsWith("Bearer ")) {
     throw new Error("Missing bearer token");
   }
   const token = authHeader.slice("Bearer ".length);
-  const { payload } = await jwtVerify<AuthPayload>(token, jwtKey);
-  const username = payload.sub;
-  if (!username) {
-    throw new Error("Invalid token subject");
+
+  // First try to validate as new API key (stored)
+  const apiKeyUsername = await validateApiKey(token);
+  if (apiKeyUsername) {
+    return apiKeyUsername;
   }
-  return username;
+
+  // Fall back to old JWT validation (for transition period)
+  try {
+    const { payload } = await jwtVerify<AuthPayload>(token, jwtKey);
+    const username = payload.sub;
+    if (!username) {
+      throw new Error("Invalid token subject");
+    }
+    return username;
+  } catch {
+    throw new Error("Invalid or expired token");
+  }
 };
 
 const channelParts = (channel: string) => channel.split(".");
@@ -267,13 +398,47 @@ app.post("/auth/init", async (c) => {
   if (!username) {
     return c.json({ error: "username required" }, 400);
   }
-  const signature = `claw-sig-${crypto.randomBytes(10).toString("base64url")}`;
-  await redis.set(`authsig:${username}`, signature, { EX: 10 * 60 });
-  return c.json({
+
+  // Check if user already has an active API key
+  const existingKey = await redis.get(`apikey:${username}`);
+
+  // Check claim limit
+  const pendingClaims = await getPendingClaimsCount(username);
+  if (pendingClaims >= MAX_CLAIMS_PER_USER) {
+    const nextAvailable = await getNextClaimAvailableTime(username);
+    const retryTimestamp = nextAvailable || Date.now() + (CLAIM_TTL_SECONDS * 1000);
+
+    return c.json({
+      error: "Maximum authentication attempts reached",
+      hint: "You have exhausted your set of temporary authentication tokens. Wait for the tokens to expire before creating new ones.",
+      retry_after_seconds: Math.ceil((retryTimestamp - Date.now()) / 1000),
+      retry_timestamp: retryTimestamp,
+      max_claims: MAX_CLAIMS_PER_USER,
+      pending_claims: pendingClaims
+    }, 429);
+  }
+
+  // Create new claim token
+  const claimToken = await createClaim(username);
+
+  // Create the signature to be placed in MaltBook profile
+  const signature = `claw-sig-${claimToken}`;
+
+  const response: Record<string, unknown> = {
     username,
+    claim_token: claimToken,
     signature,
-    instructions: `Place the signature in your MaltBook profile description: ${signature}`
-  });
+    instructions: `Place the signature in your MaltBook profile description: ${signature}`,
+    pending_claims: pendingClaims + 1,
+    max_claims: MAX_CLAIMS_PER_USER
+  };
+
+  // Add note if user already has an active key
+  if (existingKey) {
+    response.note = "You already have an active API key. This will create a new one after verification, invalidating your current key.";
+  }
+
+  return c.json(response);
 });
 
 app.post("/auth/dev-register", async (c) => {
@@ -285,20 +450,40 @@ app.post("/auth/dev-register", async (c) => {
   if (!username) {
     return c.json({ error: "username required" }, 400);
   }
-  const token = await createToken(username);
-  return c.json({ token });
+
+  // Generate and store API key for dev mode
+  const apiKey = await generateApiKey(username);
+  await storeApiKey(username, apiKey);
+
+  return c.json({
+    token: apiKey,
+    username,
+    hint: "Dev mode API key created. Store it securely."
+  });
 });
 
 app.post("/auth/verify", async (c) => {
-  const body = await c.req.json<{ username?: string }>();
+  const body = await c.req.json<{ username?: string; claim_token?: string }>();
   const username = body?.username?.trim();
+  const claimToken = body?.claim_token?.trim();
+
   if (!username) {
     return c.json({ error: "username required" }, 400);
   }
-  const signature = await redis.get(`authsig:${username}`);
-  if (!signature) {
-    return c.json({ error: "no pending signature" }, 400);
+
+  if (!claimToken) {
+    return c.json({ error: "claim_token required" }, 400);
   }
+
+  // Validate the claim token
+  const isValidClaim = await validateClaim(username, claimToken);
+  if (!isValidClaim) {
+    return c.json({ error: "invalid or expired claim token" }, 400);
+  }
+
+  // Reconstruct the signature from the claim token
+  const signature = `claw-sig-${claimToken}`;
+
   if (!moltbookApiKey) {
     console.warn("[auth/verify] Moltbook API key missing", { username });
     return c.json({ error: "MOLTBOOK_API_KEY not configured" }, 500);
@@ -309,6 +494,7 @@ app.post("/auth/verify", async (c) => {
     apiBase: moltbookApiBase,
     hasApiKey: true
   });
+
   const apiUrl = `${moltbookApiBase}/agents/profile?name=${encodeURIComponent(username)}`;
   const response = await fetch(apiUrl, {
     headers: {
@@ -316,6 +502,7 @@ app.post("/auth/verify", async (c) => {
       Accept: "application/json"
     }
   });
+
   if (!response.ok) {
     const errorBody = await response.text().catch(() => "<unreadable>");
     console.error("[auth/verify] Moltbook API fetch failed", {
@@ -326,30 +513,68 @@ app.post("/auth/verify", async (c) => {
     });
     return c.json({ error: `profile fetch failed (${response.status})` }, 502);
   }
+
   const profile = await response.json<{
     success?: boolean;
     agent?: { description?: string };
   }>();
+
   if (profile?.success === false) {
-    console.error("[auth/verify] Moltbook API returned success=false", {
+    console.error("[auth/verify] MaltBook API returned success=false", {
       username,
       profile
     });
   }
+
   const description = profile?.agent?.description ?? "";
   const signatureFound = description.includes(signature);
+
   if (!signatureFound) {
     console.warn("[auth/verify] Signature not found in profile description", {
       username
     });
+    return c.json({ error: "signature not found in profile" }, 401);
   }
 
-  if (!signatureFound) {
-    return c.json({ error: "signature not found" }, 401);
+  // Delete the claim (one-time use)
+  await deleteClaim(username, claimToken);
+
+  // Generate and store the new API key
+  const apiKey = await generateApiKey(username);
+  await storeApiKey(username, apiKey);
+
+  console.log("[auth/verify] Authentication successful, API key created", {
+    username,
+    hadPreviousKey: !!(await redis.get(`apikey:${username}`))
+  });
+
+  return c.json({
+    token: apiKey,
+    username,
+    hint: "This is your API key. Store it securely. If you lose it, run 'claw.events login' again to authenticate and get a new one."
+  });
+});
+
+// Revoke endpoint - invalidates current API key (requires re-authentication)
+app.post("/auth/revoke", async (c) => {
+  let username: string;
+  try {
+    username = await requireAuth(c.req.header("authorization"));
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 401);
   }
-  const token = await createToken(username);
-  await redis.del(`authsig:${username}`);
-  return c.json({ token });
+
+  // Revoke the API key
+  await revokeApiKey(username);
+
+  console.log("[auth/revoke] API key revoked", { username });
+
+  return c.json({
+    ok: true,
+    revoked: true,
+    username,
+    hint: "Your API key has been revoked. You will need to re-authenticate using 'claw.events login' to get a new API key."
+  });
 });
 
 // NEW PERMISSION MODEL: All channels are public by default
@@ -5789,6 +6014,90 @@ app.get("/skill.md", async (c) => {
   }
 });
 
+// ============================================================================
+// Marketing Site Routes - Dual Format (HTML/Markdown)
+// ============================================================================
+
+const MARKETING_CONTENT_ROOT = join(process.cwd(), "..", "site", "content");
+
+// Helper to detect requested format
+const getRequestedFormat = (c: any): "html" | "markdown" => {
+  const queryFormat = c.req.query("format");
+  if (queryFormat === "markdown" || queryFormat === "md") return "markdown";
+  if (queryFormat === "html") return "html";
+  
+  const acceptHeader = c.req.header("Accept") || "";
+  if (acceptHeader.includes("markdown") || acceptHeader.includes("text/plain")) {
+    return "markdown";
+  }
+  
+  return "html";
+};
+
+// Helper to serve marketing content
+const serveMarketingContent = async (c: any, contentPath: string) => {
+  const format = getRequestedFormat(c);
+  
+  // Determine file paths
+  const mdPath = join(MARKETING_CONTENT_ROOT, contentPath + ".md");
+  const htmlPath = join(MARKETING_CONTENT_ROOT, contentPath + ".html");
+  const dirMdPath = join(MARKETING_CONTENT_ROOT, contentPath, "index.md");
+  const dirHtmlPath = join(MARKETING_CONTENT_ROOT, contentPath, "index.html");
+  
+  try {
+    if (format === "markdown") {
+      // Try to serve Markdown
+      try {
+        const content = await readFile(mdPath, "utf8");
+        c.header("Content-Type", "text/markdown; charset=utf-8");
+        return c.text(content);
+      } catch {
+        // Try directory index
+        const content = await readFile(dirMdPath, "utf8");
+        c.header("Content-Type", "text/markdown; charset=utf-8");
+        return c.text(content);
+      }
+    } else {
+      // Try to serve HTML
+      try {
+        const content = await readFile(htmlPath, "utf8");
+        c.header("Content-Type", "text/html; charset=utf-8");
+        return c.html(content);
+      } catch {
+        // Try directory index
+        const content = await readFile(dirHtmlPath, "utf8");
+        c.header("Content-Type", "text/html; charset=utf-8");
+        return c.html(content);
+      }
+    }
+  } catch {
+    return c.text(`Content not found: ${contentPath}`, 404);
+  }
+};
+
+// Marketing index
+app.get("/marketing", async (c) => serveMarketingContent(c, "index"));
+
+// Examples
+app.get("/examples", async (c) => serveMarketingContent(c, "examples/index"));
+app.get("/examples/:name", async (c) => {
+  const name = c.req.param("name");
+  return serveMarketingContent(c, `examples/${name}`);
+});
+
+// Guides
+app.get("/guides", async (c) => serveMarketingContent(c, "guides/index"));
+app.get("/guides/:name", async (c) => {
+  const name = c.req.param("name");
+  return serveMarketingContent(c, `guides/${name}`);
+});
+
+// Reference pages
+app.get("/api-reference", async (c) => serveMarketingContent(c, "api-reference"));
+app.get("/architecture", async (c) => serveMarketingContent(c, "architecture"));
+app.get("/use-cases", async (c) => serveMarketingContent(c, "use-cases"));
+app.get("/comparisons", async (c) => serveMarketingContent(c, "comparisons"));
+
 // Scalar API Client
 app.get("/docs/apiclient", (c) => {
   return c.html(`<!DOCTYPE html>
@@ -6030,3 +6339,5 @@ Bun.serve({
 });
 
 console.log(`claw.events api listening on ${port}`);
+
+export default app;

@@ -4,8 +4,8 @@ import { createClient, type RedisClientType } from "redis";
 import { SignJWT } from "jose";
 
 // Test configuration
-const TEST_API_URL = "http://localhost:3001";
-const TEST_PORT = 3001;
+const TEST_PORT = parseInt(process.env.PORT || "3001");
+const TEST_API_URL = `http://localhost:${TEST_PORT}`;
 
 const createTestToken = async (username: string, jwtSecret: string, options?: { expired?: boolean }): Promise<string> => {
   const jwtKey = new TextEncoder().encode(jwtSecret);

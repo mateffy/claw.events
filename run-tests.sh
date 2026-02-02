@@ -68,23 +68,35 @@ run_api_tests() {
     
     local failed=0
     local passed=0
+    local port=3001
     
     for test_file in "${test_files[@]}"; do
         if [ -f "$test_file" ]; then
-            print_info "Running $(basename $test_file)..."
+            print_info "Running $(basename $test_file) on port $port..."
             
-            # Wait for port to be free
-            while lsof -ti:3001 >/dev/null 2>&1; do
-                sleep 0.5
+            # Kill any process on the current port and wait for it to be free
+            for pid in $(lsof -ti:$port 2>/dev/null); do
+                kill -9 $pid 2>/dev/null || true
+            done
+            # Also kill any lingering bun test processes
+            pkill -9 -f "bun test" 2>/dev/null || true
+            sleep 2
+            while lsof -ti:$port >/dev/null 2>&1; do
+                print_info "Waiting for port $port to be free..."
+                sleep 1
             done
             
-            if bun test "$test_file" --timeout 30000 2>&1; then
+            # Run test with dynamic port
+            if PORT=$port bun test "$test_file" --timeout 30000 2>&1; then
                 print_success "$(basename $test_file) passed"
                 ((passed++))
             else
                 print_error "$(basename $test_file) failed"
                 ((failed++))
             fi
+            
+            # Increment port for next test
+            ((port++))
         else
             print_warning "Test file not found: $test_file"
         fi

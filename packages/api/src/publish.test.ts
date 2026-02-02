@@ -3,8 +3,8 @@ import type { Server } from "bun";
 import { createClient, type RedisClientType } from "redis";
 
 // Test configuration
-const TEST_API_URL = "http://localhost:3001";
-const TEST_PORT = 3001;
+const TEST_PORT = parseInt(process.env.PORT || "3001");
+const TEST_API_URL = `http://localhost:${TEST_PORT}`;
 
 // Helper function to create a valid token
 const createTestToken = async (username: string, jwtSecret: string): Promise<string> => {
@@ -17,6 +17,24 @@ const createTestToken = async (username: string, jwtSecret: string): Promise<str
     .setExpirationTime("7d")
     .sign(jwtKey);
 };
+
+// Global fetch mock for Moltbook API - must be set up before server import
+const globalFetchMock = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = input.toString();
+  if (url.includes("localhost:9000/api/v1/agents/profile")) {
+    return Promise.resolve(new Response(
+      JSON.stringify({
+        success: true,
+        agent: {
+          description: "Test profile with claw-sig-placeholder",
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    ));
+  }
+  // Pass through other requests
+  return Promise.resolve(new Response("Not found", { status: 404 }));
+});
 
 describe("Publishing Endpoint Tests", () => {
   let server: Server;
@@ -40,6 +58,7 @@ describe("Publishing Endpoint Tests", () => {
     redis = createClient({ url: process.env.REDIS_URL });
     await redis.connect();
 
+    // Import and start server (uses the mocked fetch)
     const { default: app } = await import("./index.ts");
     server = Bun.serve({
       fetch: app.fetch,
@@ -55,6 +74,8 @@ describe("Publishing Endpoint Tests", () => {
       await redis.quit();
     }
     process.env = originalEnv;
+    // Restore global fetch mock
+    globalFetchMock.mockRestore();
   });
 
   beforeEach(async () => {
@@ -101,7 +122,7 @@ describe("Publishing Endpoint Tests", () => {
       const body = await response.json();
       expect(body.ok).toBe(true);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.2: POST /api/publish - Own Agent Channel", async () => {
@@ -129,7 +150,7 @@ describe("Publishing Endpoint Tests", () => {
 
       expect(response.status).toBe(200);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.3: POST /api/publish - Centrifugo Publish Called", async () => {
@@ -164,7 +185,7 @@ describe("Publishing Endpoint Tests", () => {
       expect(publishData.method).toBe("publish");
       expect(publishData.params.channel).toBe("public.test");
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.4: POST /api/publish - No Auth", async () => {
@@ -248,7 +269,7 @@ describe("Publishing Endpoint Tests", () => {
 
       expect(response.status).toBe(200);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.8: POST /api/publish - Locked Channel Still Denies Non-Owner", async () => {
@@ -313,7 +334,7 @@ describe("Publishing Endpoint Tests", () => {
       expect(ttl).toBeGreaterThan(0);
       expect(ttl).toBeLessThanOrEqual(1);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.10: POST /api/publish - Rate Limit 6th Request Within 1s", async () => {
@@ -355,7 +376,7 @@ describe("Publishing Endpoint Tests", () => {
       expect(body.retry_after).toBeDefined();
       expect(body.retry_timestamp).toBeDefined();
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.11: POST /api/publish - Rate Limit Resets After 1s", async () => {
@@ -395,7 +416,7 @@ describe("Publishing Endpoint Tests", () => {
 
       expect(response.status).toBe(200);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     }, 5000);
 
     it("Test 11.12: POST /api/publish - Rate Limit retry_after Accuracy", async () => {
@@ -434,7 +455,7 @@ describe("Publishing Endpoint Tests", () => {
       expect(body.retry_after).toBeGreaterThanOrEqual(0);
       expect(body.retry_after).toBeLessThanOrEqual(1);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.13: POST /api/publish - Rate Limit Different Users Independent", async () => {
@@ -471,7 +492,7 @@ describe("Publishing Endpoint Tests", () => {
       expect(response1.status).toBe(200);
       expect(response2.status).toBe(200);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
   });
 
@@ -498,7 +519,7 @@ describe("Publishing Endpoint Tests", () => {
 
       expect(response.status).toBe(200);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.15: POST /api/publish - Payload Size At Limit (16KB)", async () => {
@@ -526,7 +547,7 @@ describe("Publishing Endpoint Tests", () => {
       // Should either succeed or be rejected depending on exact size
       expect([200, 413]).toContain(response.status);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.16: POST /api/publish - Payload Size Over Limit (16KB)", async () => {
@@ -569,7 +590,7 @@ describe("Publishing Endpoint Tests", () => {
 
       expect(response.status).toBe(200);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.18: POST /api/publish - No Payload Field", async () => {
@@ -593,7 +614,7 @@ describe("Publishing Endpoint Tests", () => {
 
       expect(response.status).toBe(200);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
   });
 
@@ -676,7 +697,7 @@ describe("Publishing Endpoint Tests", () => {
       const body = await response.json();
       expect(body.error).toContain("centrifugo publish failed");
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.23: POST /api/publish - Statistics Tracked", async () => {
@@ -709,7 +730,7 @@ describe("Publishing Endpoint Tests", () => {
       const totalMessages = await redis.get("stats:total_messages");
       expect(parseInt(totalMessages || "0")).toBeGreaterThan(0);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.24: POST /api/publish - Circular JSON Payload", async () => {
@@ -792,7 +813,7 @@ describe("Publishing Endpoint Tests", () => {
       const body = await response.json();
       expect(body.ok).toBe(true);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.26: POST /api/publish - Invalid Payload Fails Schema Validation", async () => {
@@ -871,7 +892,7 @@ describe("Publishing Endpoint Tests", () => {
       const body = await response.json();
       expect(body.ok).toBe(true);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.28: POST /api/publish - Schema with Array Validation", async () => {
@@ -928,7 +949,7 @@ describe("Publishing Endpoint Tests", () => {
 
       expect(response.status).toBe(200);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
 
     it("Test 11.29: POST /api/publish - Schema with Enum Validation", async () => {
@@ -980,7 +1001,7 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       expect(response1.status).toBe(200);
-      mockFetch.restore();
+      mockFetch.mockRestore();
 
       // Invalid enum value
       const response2 = await fetch(`${TEST_API_URL}/api/publish`, {
@@ -1046,7 +1067,7 @@ describe("Publishing Endpoint Tests", () => {
 
       expect(response.status).toBe(200);
 
-      mockFetch.restore();
+      mockFetch.mockRestore();
     });
   });
 });

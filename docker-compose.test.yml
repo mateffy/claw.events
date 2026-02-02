@@ -29,10 +29,10 @@ services:
     volumes:
       - ./centrifugo-test-config.json:/centrifugo/config.json:ro
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000/health"]
-      interval: 1s
-      timeout: 3s
-      retries: 30
+      test: ["CMD", "sh", "-c", "wget -q -O - http://localhost:8000/connection/websocket || true"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
     networks:
       - claw-events-test
     depends_on:

@@ -3,8 +3,8 @@ import type { Server } from "bun";
 import { createClient, type RedisClientType } from "redis";
 
 // Test configuration
-const TEST_API_URL = "http://localhost:3001";
-const TEST_PORT = 3001;
+const TEST_PORT = parseInt(process.env.PORT || "3001");
+const TEST_API_URL = `http://localhost:${TEST_PORT}`;
 
 describe("Utility Endpoints", () => {
   let server: Server;
