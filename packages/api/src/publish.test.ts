@@ -1,101 +1,40 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
-import type { Server } from "bun";
-import { createClient, type RedisClientType } from "redis";
-
-// Test configuration
-const TEST_PORT = parseInt(process.env.PORT || "3001");
-const TEST_API_URL = `http://localhost:${TEST_PORT}`;
-
-// Helper function to create a valid token
-const createTestToken = async (username: string, jwtSecret: string): Promise<string> => {
-  const { SignJWT } = await import("jose");
-  const jwtKey = new TextEncoder().encode(jwtSecret);
-  return new SignJWT({})
-    .setProtectedHeader({ alg: "HS256" })
-    .setSubject(username)
-    .setIssuedAt()
-    .setExpirationTime("7d")
-    .sign(jwtKey);
-};
-
-// Global fetch mock for Moltbook API - must be set up before server import
-const globalFetchMock = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
-  const url = input.toString();
-  if (url.includes("localhost:9000/api/v1/agents/profile")) {
-    return Promise.resolve(new Response(
-      JSON.stringify({
-        success: true,
-        agent: {
-          description: "Test profile with claw-sig-placeholder",
-        },
-      }),
-      { status: 200, headers: { "Content-Type": "application/json" } }
-    ));
-  }
-  // Pass through other requests
-  return Promise.resolve(new Response("Not found", { status: 404 }));
-});
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, mock } from "bun:test";
+import {
+  createTestContext,
+  startTestServer,
+  cleanupTestContext,
+  clearTestData,
+  createTestToken,
+  type TestContext,
+} from "./test-utils.ts";
 
 describe("Publishing Endpoint Tests", () => {
-  let server: Server;
-  let redis: RedisClientType;
-  let originalEnv: Record<string, string | undefined>;
-  let jwtSecret: string;
+  let ctx: TestContext;
 
   beforeAll(async () => {
-    originalEnv = { ...process.env };
-    
-    process.env.PORT = String(TEST_PORT);
-    jwtSecret = "test-jwt-secret-for-testing-only";
-    process.env.JWT_SECRET = jwtSecret;
-    process.env.REDIS_URL = "redis://localhost:6380";
-    process.env.CENTRIFUGO_API_URL = "http://localhost:8001/api";
-    process.env.CENTRIFUGO_API_KEY = "test-centrifugo-key";
-    process.env.MOLTBOOK_API_BASE = "http://localhost:9000/api/v1";
-    process.env.MOLTBOOK_API_KEY = "test-moltbook-key";
-    process.env.CLAW_DEV_MODE = "true";
-
-    redis = createClient({ url: process.env.REDIS_URL });
-    await redis.connect();
-
-    // Import and start server (uses the mocked fetch)
-    const { default: app } = await import("./index.ts");
-    server = Bun.serve({
-      fetch: app.fetch,
-      port: TEST_PORT,
-    });
+    ctx = await createTestContext();
+    await startTestServer(ctx);
   });
 
   afterAll(async () => {
-    if (server) {
-      server.stop();
-    }
-    if (redis) {
-      await redis.quit();
-    }
-    process.env = originalEnv;
-    // Restore global fetch mock
-    globalFetchMock.mockRestore();
+    await cleanupTestContext(ctx);
   });
 
   beforeEach(async () => {
-    // Clean up all test keys
-    const keys = await redis.keys("*");
-    const testKeys = keys.filter(k => 
-      k.startsWith("ratelimit:") || 
-      k.startsWith("locked:") || 
-      k.startsWith("perm:") ||
-      k.startsWith("stats:") ||
-      k.startsWith("advertise:")
-    );
-    if (testKeys.length > 0) {
-      await redis.del(testKeys);
+    if (ctx.redis) {
+      await clearTestData(ctx.redis);
+    }
+  });
+
+  afterEach(async () => {
+    if (ctx.redis) {
+      await clearTestData(ctx.redis);
     }
   });
 
   describe("POST /api/publish - Basic Functionality", () => {
     it("Test 11.1: POST /api/publish - Public Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Mock Centrifugo
       const mockFetch = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
@@ -109,7 +48,7 @@ describe("Publishing Endpoint Tests", () => {
         return Promise.resolve(new Response("Not found", { status: 404 }));
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -126,7 +65,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.2: POST /api/publish - Own Agent Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       const mockFetch = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
         const url = input.toString();
@@ -139,7 +78,7 @@ describe("Publishing Endpoint Tests", () => {
         return Promise.resolve(new Response("Not found", { status: 404 }));
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -154,7 +93,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.3: POST /api/publish - Centrifugo Publish Called", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
       let centrifugoCalled = false;
       let publishData: any = null;
 
@@ -172,7 +111,7 @@ describe("Publishing Endpoint Tests", () => {
         return Promise.resolve(new Response("Not found", { status: 404 }));
       });
 
-      await fetch(`${TEST_API_URL}/api/publish`, {
+      await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -189,7 +128,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.4: POST /api/publish - No Auth", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ channel: "public.test", payload: {} }),
@@ -201,9 +140,9 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.5: POST /api/publish - System Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -218,9 +157,9 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.6: POST /api/publish - Non-Owner Agent Channel", async () => {
-      const token = await createTestToken("bob", jwtSecret);
+      const token = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -235,10 +174,10 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.7: POST /api/publish - Locked Channel Still Allows Owner Publish", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Lock the channel first
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -258,7 +197,7 @@ describe("Publishing Endpoint Tests", () => {
         return Promise.resolve(new Response("Not found", { status: 404 }));
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -273,11 +212,11 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.8: POST /api/publish - Locked Channel Still Denies Non-Owner", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
       // Alice locks and grants bob subscribe access
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -286,7 +225,7 @@ describe("Publishing Endpoint Tests", () => {
         body: JSON.stringify({ channel: "agent.alice.private" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/grant`, {
+      await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -296,7 +235,7 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       // Bob tries to publish
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -311,7 +250,7 @@ describe("Publishing Endpoint Tests", () => {
 
   describe("POST /api/publish - Rate Limiting", () => {
     it("Test 11.9: POST /api/publish - Rate Limit Redis Key Created", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       const mockFetch = mock(fetch, () => {
         return Promise.resolve(new Response(
@@ -320,7 +259,7 @@ describe("Publishing Endpoint Tests", () => {
         ));
       });
 
-      await fetch(`${TEST_API_URL}/api/publish`, {
+      await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -330,7 +269,7 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       // Check Redis key exists with 1 second TTL
-      const ttl = await redis.ttl("ratelimit:alice");
+      const ttl = await ctx.redis.ttl("ratelimit:alice");
       expect(ttl).toBeGreaterThan(0);
       expect(ttl).toBeLessThanOrEqual(1);
 
@@ -338,7 +277,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.10: POST /api/publish - Rate Limit 6th Request Within 1s", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       const mockFetch = mock(fetch, () => {
         return Promise.resolve(new Response(
@@ -349,7 +288,7 @@ describe("Publishing Endpoint Tests", () => {
 
       // First 5 requests should succeed
       for (let i = 0; i < 5; i++) {
-        const response = await fetch(`${TEST_API_URL}/api/publish`, {
+        const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -361,7 +300,7 @@ describe("Publishing Endpoint Tests", () => {
       }
 
       // 6th request should be rate limited
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -380,7 +319,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.11: POST /api/publish - Rate Limit Resets After 1s", async () => {
-      const token = await createTestToken("ratetest", jwtSecret);
+      const token = await createTestToken("ratetest", ctx.config.jwtSecret);
 
       const mockFetch = mock(fetch, () => {
         return Promise.resolve(new Response(
@@ -391,7 +330,7 @@ describe("Publishing Endpoint Tests", () => {
 
       // Send 5 requests to hit the limit
       for (let i = 0; i < 5; i++) {
-        await fetch(`${TEST_API_URL}/api/publish`, {
+        await fetch(`${ctx.config.apiUrl}/api/publish`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -405,7 +344,7 @@ describe("Publishing Endpoint Tests", () => {
       await new Promise((resolve) => setTimeout(resolve, 1100));
 
       // Request after 1 second should succeed
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -420,7 +359,7 @@ describe("Publishing Endpoint Tests", () => {
     }, 5000);
 
     it("Test 11.12: POST /api/publish - Rate Limit retry_after Accuracy", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       const mockFetch = mock(fetch, () => {
         return Promise.resolve(new Response(
@@ -431,7 +370,7 @@ describe("Publishing Endpoint Tests", () => {
 
       // Send 5 requests to hit the limit
       for (let i = 0; i < 5; i++) {
-        await fetch(`${TEST_API_URL}/api/publish`, {
+        await fetch(`${ctx.config.apiUrl}/api/publish`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -442,7 +381,7 @@ describe("Publishing Endpoint Tests", () => {
       }
 
       // 6th request should be rate limited with ~1s retry_after
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -459,8 +398,8 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.13: POST /api/publish - Rate Limit Different Users Independent", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
       const mockFetch = mock(fetch, () => {
         return Promise.resolve(new Response(
@@ -470,7 +409,7 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       // Alice publishes
-      const response1 = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response1 = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -480,7 +419,7 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       // Bob publishes immediately
-      const response2 = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response2 = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -498,7 +437,7 @@ describe("Publishing Endpoint Tests", () => {
 
   describe("POST /api/publish - Payload Size Limits", () => {
     it("Test 11.14: POST /api/publish - Payload Size Under Limit (16KB)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
       const payload = { data: "a".repeat(15000) }; // ~15KB
 
       const mockFetch = mock(fetch, () => {
@@ -508,7 +447,7 @@ describe("Publishing Endpoint Tests", () => {
         ));
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -523,7 +462,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.15: POST /api/publish - Payload Size At Limit (16KB)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
       // Create payload of exactly 16384 bytes when stringified
       const payloadStr = "a".repeat(16384 - 20); // Account for JSON wrapper
       const payload = { data: payloadStr };
@@ -535,7 +474,7 @@ describe("Publishing Endpoint Tests", () => {
         ));
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -551,10 +490,10 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.16: POST /api/publish - Payload Size Over Limit (16KB)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
       const payload = { data: "a".repeat(20000) }; // >16KB
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -570,7 +509,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.17: POST /api/publish - Empty Payload (Null)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       const mockFetch = mock(fetch, () => {
         return Promise.resolve(new Response(
@@ -579,7 +518,7 @@ describe("Publishing Endpoint Tests", () => {
         ));
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -594,7 +533,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.18: POST /api/publish - No Payload Field", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       const mockFetch = mock(fetch, () => {
         return Promise.resolve(new Response(
@@ -603,7 +542,7 @@ describe("Publishing Endpoint Tests", () => {
         ));
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -620,9 +559,9 @@ describe("Publishing Endpoint Tests", () => {
 
   describe("POST /api/publish - Validation and Errors", () => {
     it("Test 11.19: POST /api/publish - Invalid Channel Format", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -637,9 +576,9 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.20: POST /api/publish - Missing Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -654,11 +593,11 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.21: POST /api/publish - Centrifugo Not Configured", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
       const originalKey = process.env.CENTRIFUGO_API_KEY;
       process.env.CENTRIFUGO_API_KEY = "";
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -675,7 +614,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.22: POST /api/publish - Centrifugo Publish Fails", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       const mockFetch = mock(fetch, () => {
         return Promise.resolve(new Response(
@@ -684,7 +623,7 @@ describe("Publishing Endpoint Tests", () => {
         ));
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -701,11 +640,11 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.23: POST /api/publish - Statistics Tracked", async () => {
-      const token = await createTestToken("statstest", jwtSecret);
+      const token = await createTestToken("statstest", ctx.config.jwtSecret);
 
       // Clear stats first
-      await redis.del("stats:agents");
-      await redis.del("stats:total_messages");
+      await ctx.redis.del("stats:agents");
+      await ctx.redis.del("stats:total_messages");
 
       const mockFetch = mock(fetch, () => {
         return Promise.resolve(new Response(
@@ -714,7 +653,7 @@ describe("Publishing Endpoint Tests", () => {
         ));
       });
 
-      await fetch(`${TEST_API_URL}/api/publish`, {
+      await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -724,23 +663,23 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       // Check stats were tracked
-      const isMember = await redis.sIsMember("stats:agents", "statstest");
+      const isMember = await ctx.redis.sIsMember("stats:agents", "statstest");
       expect(isMember).toBe(true);
 
-      const totalMessages = await redis.get("stats:total_messages");
+      const totalMessages = await ctx.redis.get("stats:total_messages");
       expect(parseInt(totalMessages || "0")).toBeGreaterThan(0);
 
       mockFetch.mockRestore();
     });
 
     it("Test 11.24: POST /api/publish - Circular JSON Payload", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Create circular object
       const payload: any = { a: 1 };
       payload.self = payload;
 
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -757,14 +696,14 @@ describe("Publishing Endpoint Tests", () => {
   describe("POST /api/publish - Schema Validation", () => {
     beforeEach(async () => {
       // Clean up advertisement keys
-      const keys = await redis.keys("advertise:*");
+      const keys = await ctx.redis.keys("advertise:*");
       if (keys.length > 0) {
-        await redis.del(keys);
+        await ctx.redis.del(keys);
       }
     });
 
     it("Test 11.25: POST /api/publish - Valid Payload Matches Schema", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Set up advertisement with schema
       const schema = {
@@ -776,7 +715,7 @@ describe("Publishing Endpoint Tests", () => {
         required: ["message"]
       };
 
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -797,7 +736,7 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       // Valid payload
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -817,7 +756,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.26: POST /api/publish - Invalid Payload Fails Schema Validation", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Set up advertisement with schema
       const schema = {
@@ -829,7 +768,7 @@ describe("Publishing Endpoint Tests", () => {
         required: ["message"]
       };
 
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -843,7 +782,7 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       // Invalid payload (missing required field, wrong type)
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -864,7 +803,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.27: POST /api/publish - No Schema Defined Allows Any Payload", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // No advertisement set up for this channel
 
@@ -876,7 +815,7 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       // Any payload should work
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -896,7 +835,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.28: POST /api/publish - Schema with Array Validation", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Set up advertisement with array schema
       const schema = {
@@ -911,7 +850,7 @@ describe("Publishing Endpoint Tests", () => {
         }
       };
 
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -932,7 +871,7 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       // Valid array payload
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -953,7 +892,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.29: POST /api/publish - Schema with Enum Validation", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Set up advertisement with enum schema
       const schema = {
@@ -967,7 +906,7 @@ describe("Publishing Endpoint Tests", () => {
         required: ["status"]
       };
 
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -988,7 +927,7 @@ describe("Publishing Endpoint Tests", () => {
         ));
       });
 
-      const response1 = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response1 = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1004,7 +943,7 @@ describe("Publishing Endpoint Tests", () => {
       mockFetch.mockRestore();
 
       // Invalid enum value
-      const response2 = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response2 = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1022,7 +961,7 @@ describe("Publishing Endpoint Tests", () => {
     });
 
     it("Test 11.30: POST /api/publish - Null Payload Skips Validation", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Set up advertisement with schema
       const schema = {
@@ -1032,7 +971,7 @@ describe("Publishing Endpoint Tests", () => {
         }
       };
 
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1053,7 +992,7 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       // Null payload should skip validation and succeed
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

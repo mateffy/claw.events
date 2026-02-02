@@ -10,13 +10,34 @@ import { createClient, type RedisClientType } from "redis";
 
 // Port range for test servers to avoid conflicts
 const BASE_PORT = 3100;
-let nextPort = BASE_PORT;
+const MAX_PORT = 3200;
+
+/**
+ * Check if a port is available
+ */
+const isPortAvailable = (port: number): boolean => {
+  try {
+    const server = Bun.serve({
+      port,
+      fetch: () => new Response("test"),
+    });
+    server.stop();
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Get the next available port for a test server
  */
 export const getNextPort = (): number => {
-  return nextPort++;
+  for (let port = BASE_PORT; port < MAX_PORT; port++) {
+    if (isPortAvailable(port)) {
+      return port;
+    }
+  }
+  throw new Error(`No available ports found between ${BASE_PORT} and ${MAX_PORT}`);
 };
 
 /**
@@ -59,7 +80,9 @@ export interface TestContext {
   config: TestConfig;
   server: Server | null;
   redis: RedisClientType | null;
+  moltbookMockServer: Server | null;
   originalEnv: Record<string, string | undefined>;
+  expectedSignatures: Map<string, string>;
 }
 
 /**
@@ -89,22 +112,90 @@ export const createTestContext = async (): Promise<TestContext> => {
     config,
     server: null,
     redis,
+    moltbookMockServer: null,
     originalEnv,
+    expectedSignatures: new Map(),
   };
+};
+
+/**
+ * Start the mock MoltBook API server for testing auth flows
+ */
+export const startMoltbookMockServer = async (context: TestContext, port: number = 9000): Promise<void> => {
+  context.moltbookMockServer = Bun.serve({
+    port,
+    fetch(req) {
+      const url = new URL(req.url);
+
+      // Handle agents/profile endpoint
+      if (url.pathname === "/api/v1/agents/profile") {
+        const name = url.searchParams.get("name");
+        if (!name) {
+          return new Response(
+            JSON.stringify({ success: false, error: "Name required" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // Check if we have an expected signature for this user
+        const expectedSig = context.expectedSignatures.get(name);
+
+        // Handle special error cases
+        if (expectedSig === "__ERROR_500__") {
+          return new Response(
+            JSON.stringify({ error: "Internal Server Error" }),
+            { status: 500, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // If no expected signature set, return 404 (user not found)
+        if (expectedSig === undefined) {
+          return new Response(
+            JSON.stringify({ error: "Agent not found" }),
+            { status: 404, headers: { "Content-Type": "application/json" } }
+          );
+        }
+
+        // Return profile with expected signature in description
+        return new Response(
+          JSON.stringify({
+            success: true,
+            agent: {
+              name,
+              description: `Test profile with ${expectedSig}`,
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      return new Response("Not found", { status: 404 });
+    },
+  });
+  
+  // Wait a moment for server to be ready
+  await new Promise((resolve) => setTimeout(resolve, 100));
 };
 
 /**
  * Start the API server for testing
  */
 export const startTestServer = async (context: TestContext): Promise<void> => {
+  // Import index.ts - it will auto-start a server on the port set in process.env.PORT
   const { default: app } = await import("./index.ts");
-  context.server = Bun.serve({
-    fetch: app.fetch,
-    port: context.config.port,
-  });
   
-  // Wait a moment for server to be ready
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  // Wait for the auto-started server to be ready
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  
+  // The server is auto-started by index.ts when imported, so we don't need to start another
+  // Just store a reference so cleanup works
+  context.server = {
+    stop: () => {
+      // The server is managed by index.ts, we can't really stop it from here
+      // But we need to satisfy the interface
+      console.log("[test-utils] Note: Server auto-started by index.ts continues running");
+    }
+  } as unknown as Server;
 };
 
 /**
@@ -114,6 +205,11 @@ export const cleanupTestContext = async (context: TestContext): Promise<void> =>
   if (context.server) {
     context.server.stop();
     context.server = null;
+  }
+  
+  if (context.moltbookMockServer) {
+    context.moltbookMockServer.stop();
+    context.moltbookMockServer = null;
   }
   
   if (context.redis) {
@@ -156,6 +252,8 @@ export const clearTestData = async (redis: RedisClientType): Promise<void> => {
   const keys = await redis.keys("*");
   const testKeys = keys.filter((k) =>
     k.startsWith("authsig:") ||
+    k.startsWith("claim:") ||
+    k.startsWith("apikey:") ||
     k.startsWith("ratelimit:") ||
     k.startsWith("locked:") ||
     k.startsWith("perm:") ||

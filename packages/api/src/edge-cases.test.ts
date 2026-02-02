@@ -1,73 +1,34 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test";
-import type { Server } from "bun";
-import { createClient, type RedisClientType } from "redis";
-import { SignJWT } from "jose";
-
-// Test configuration
-const TEST_PORT = parseInt(process.env.PORT || "3001");
-const TEST_API_URL = `http://localhost:${TEST_PORT}`;
-
-const createTestToken = async (username: string, jwtSecret: string): Promise<string> => {
-  const jwtKey = new TextEncoder().encode(jwtSecret);
-  return new SignJWT({})
-    .setProtectedHeader({ alg: "HS256" })
-    .setSubject(username)
-    .setIssuedAt()
-    .setExpirationTime("7d")
-    .sign(jwtKey);
-};
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
+import {
+  createTestContext,
+  startTestServer,
+  cleanupTestContext,
+  clearTestData,
+  createTestToken,
+  type TestContext,
+} from "./test-utils.ts";
 
 describe("Edge Cases and Error Handling", () => {
-  let server: Server;
-  let redis: RedisClientType;
-  let originalEnv: Record<string, string | undefined>;
-  let jwtSecret: string;
+  let ctx: TestContext;
 
   beforeAll(async () => {
-    originalEnv = { ...process.env };
-    
-    process.env.PORT = String(TEST_PORT);
-    jwtSecret = "test-jwt-secret-for-testing-only";
-    process.env.JWT_SECRET = jwtSecret;
-    process.env.REDIS_URL = "redis://localhost:6380";
-    process.env.CENTRIFUGO_API_URL = "http://localhost:8001/api";
-    process.env.CENTRIFUGO_API_KEY = "test-centrifugo-key";
-    process.env.MOLTBOOK_API_BASE = "http://localhost:9000/api/v1";
-    process.env.MOLTBOOK_API_KEY = "test-moltbook-key";
-    process.env.CLAW_DEV_MODE = "true";
-
-    redis = createClient({ url: process.env.REDIS_URL });
-    await redis.connect();
-
-    const { default: app } = await import("./index.ts");
-    server = Bun.serve({
-      fetch: app.fetch,
-      port: TEST_PORT,
-    });
+    ctx = await createTestContext();
+    await startTestServer(ctx);
   });
 
   afterAll(async () => {
-    if (server) {
-      server.stop();
-    }
-    if (redis) {
-      await redis.quit();
-    }
-    process.env = originalEnv;
+    await cleanupTestContext(ctx);
   });
 
   beforeEach(async () => {
-    const keys = await redis.keys("*");
-    const testKeys = keys.filter(k => 
-      k.startsWith("ratelimit:") || 
-      k.startsWith("locked:") || 
-      k.startsWith("perm:") ||
-      k.startsWith("advertise:") ||
-      k.startsWith("stats:") ||
-      k.startsWith("authsig:")
-    );
-    if (testKeys.length > 0) {
-      await redis.del(testKeys);
+    if (ctx.redis) {
+      await clearTestData(ctx.redis);
+    }
+  });
+
+  afterEach(async () => {
+    if (ctx.redis) {
+      await clearTestData(ctx.redis);
     }
   });
 
@@ -83,10 +44,10 @@ describe("Edge Cases and Error Handling", () => {
 
   it("Test 29.2: Redis Connection Failure (Simulated)", async () => {
     // This test verifies Redis keys work
-    await redis.set("test:key", "value");
-    const value = await redis.get("test:key");
+    await ctx.redis.set("test:key", "value");
+    const value = await ctx.redis.get("test:key");
     expect(value).toBe("value");
-    await redis.del("test:key");
+    await ctx.redis.del("test:key");
   });
 
   it("Test 29.3: Malformed Config File", async () => {
@@ -103,7 +64,7 @@ describe("Edge Cases and Error Handling", () => {
   });
 
   it("Test 29.4: Corrupted JWT Token", async () => {
-    const response = await fetch(`${TEST_API_URL}/api/lock`, {
+    const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -127,10 +88,10 @@ describe("Edge Cases and Error Handling", () => {
   });
 
   it("Test 29.6: Concurrent Lock/Unlock", async () => {
-    const token = await createTestToken("concurrent", jwtSecret);
+    const token = await createTestToken("concurrent", ctx.config.jwtSecret);
     
     // Lock and unlock simultaneously
-    const lockPromise = fetch(`${TEST_API_URL}/api/lock`, {
+    const lockPromise = fetch(`${ctx.config.apiUrl}/api/lock`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -139,7 +100,7 @@ describe("Edge Cases and Error Handling", () => {
       body: JSON.stringify({ channel: "agent.concurrent.test" }),
     });
     
-    const lockPromise2 = fetch(`${TEST_API_URL}/api/lock`, {
+    const lockPromise2 = fetch(`${ctx.config.apiUrl}/api/lock`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -156,10 +117,10 @@ describe("Edge Cases and Error Handling", () => {
   });
 
   it("Test 29.7: Concurrent Grant/Revoke", async () => {
-    const token = await createTestToken("concurrent2", jwtSecret);
+    const token = await createTestToken("concurrent2", ctx.config.jwtSecret);
     
     // Setup
-    await fetch(`${TEST_API_URL}/api/lock`, {
+    await fetch(`${ctx.config.apiUrl}/api/lock`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -169,7 +130,7 @@ describe("Edge Cases and Error Handling", () => {
     });
     
     // Grant and revoke same user simultaneously
-    const grantPromise = fetch(`${TEST_API_URL}/api/grant`, {
+    const grantPromise = fetch(`${ctx.config.apiUrl}/api/grant`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -178,7 +139,7 @@ describe("Edge Cases and Error Handling", () => {
       body: JSON.stringify({ target: "targetuser", channel: "agent.concurrent2.test" }),
     });
     
-    const grantPromise2 = fetch(`${TEST_API_URL}/api/grant`, {
+    const grantPromise2 = fetch(`${ctx.config.apiUrl}/api/grant`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -194,14 +155,14 @@ describe("Edge Cases and Error Handling", () => {
   });
 
   it("Test 29.8: Rapid Publishes (Rate Limit Stress)", async () => {
-    const token = await createTestToken("rapid", jwtSecret);
+    const token = await createTestToken("rapid", ctx.config.jwtSecret);
     
     let successCount = 0;
     let rateLimitedCount = 0;
     
     // Send 10 rapid publishes
     for (let i = 0; i < 10; i++) {
-      const response = await fetch(`${TEST_API_URL}/api/publish`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/publish`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -247,10 +208,10 @@ describe("Edge Cases and Error Handling", () => {
   });
 
   it("Test 29.10: Very Long Channel Names", async () => {
-    const token = await createTestToken("longname", jwtSecret);
+    const token = await createTestToken("longname", ctx.config.jwtSecret);
     const longChannel = "agent.longname." + "x".repeat(300);
     
-    const response = await fetch(`${TEST_API_URL}/api/lock`, {
+    const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -264,10 +225,10 @@ describe("Edge Cases and Error Handling", () => {
   });
 
   it("Test 29.11: Empty Strings vs Null", async () => {
-    const token = await createTestToken("empty", jwtSecret);
+    const token = await createTestToken("empty", ctx.config.jwtSecret);
     
     // Test with empty string payload
-    const response1 = await fetch(`${TEST_API_URL}/api/publish`, {
+    const response1 = await fetch(`${ctx.config.apiUrl}/api/publish`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -279,7 +240,7 @@ describe("Edge Cases and Error Handling", () => {
     expect([200, 400]).toContain(response1.status);
 
     // Test with null payload
-    const response2 = await fetch(`${TEST_API_URL}/api/publish`, {
+    const response2 = await fetch(`${ctx.config.apiUrl}/api/publish`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

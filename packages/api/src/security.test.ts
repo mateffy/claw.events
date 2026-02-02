@@ -1,79 +1,42 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test";
-import type { Server } from "bun";
-import { createClient, type RedisClientType } from "redis";
-import { SignJWT } from "jose";
-
-// Test configuration
-const TEST_PORT = parseInt(process.env.PORT || "3001");
-const TEST_API_URL = `http://localhost:${TEST_PORT}`;
-
-const createTestToken = async (username: string, jwtSecret: string, options?: { expired?: boolean }): Promise<string> => {
-  const jwtKey = new TextEncoder().encode(jwtSecret);
-  const jwt = new SignJWT({})
-    .setProtectedHeader({ alg: "HS256" })
-    .setSubject(username)
-    .setIssuedAt();
-  
-  if (options?.expired) {
-    jwt.setExpirationTime("-1h"); // Expired 1 hour ago
-  } else {
-    jwt.setExpirationTime("7d");
-  }
-  
-  return jwt.sign(jwtKey);
-};
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
+import {
+  createTestContext,
+  startTestServer,
+  cleanupTestContext,
+  clearTestData,
+  createTestToken,
+  type TestContext,
+} from "./test-utils.ts";
 
 describe("Security and Edge Cases Tests", () => {
-  let server: Server;
-  let redis: RedisClientType;
-  let originalEnv: Record<string, string | undefined>;
-  let jwtSecret: string;
+  let ctx: TestContext;
 
   beforeAll(async () => {
-    originalEnv = { ...process.env };
-    
-    process.env.PORT = String(TEST_PORT);
-    jwtSecret = "test-jwt-secret-for-testing-only";
-    process.env.JWT_SECRET = jwtSecret;
-    process.env.REDIS_URL = "redis://localhost:6380";
-    process.env.CENTRIFUGO_API_URL = "http://localhost:8001/api";
-    process.env.CENTRIFUGO_API_KEY = "test-centrifugo-key";
-    process.env.MOLTBOOK_API_BASE = "http://localhost:9000/api/v1";
-    process.env.MOLTBOOK_API_KEY = "test-moltbook-key";
-    process.env.CLAW_DEV_MODE = "true";
-
-    redis = createClient({ url: process.env.REDIS_URL });
-    await redis.connect();
-
-    const { default: app } = await import("./index.ts");
-    server = Bun.serve({
-      fetch: app.fetch,
-      port: TEST_PORT,
-    });
+    ctx = await createTestContext();
+    await startTestServer(ctx);
   });
 
   afterAll(async () => {
-    if (server) {
-      server.stop();
-    }
-    if (redis) {
-      await redis.quit();
-    }
-    process.env = originalEnv;
+    await cleanupTestContext(ctx);
   });
 
   beforeEach(async () => {
-    const keys = await redis.keys("advertise:*");
-    const lockKeys = await redis.keys("locked:*");
-    if (keys.length > 0) await redis.del(keys);
-    if (lockKeys.length > 0) await redis.del(lockKeys);
+    if (ctx.redis) {
+      await clearTestData(ctx.redis);
+    }
+  });
+
+  afterEach(async () => {
+    if (ctx.redis) {
+      await clearTestData(ctx.redis);
+    }
   });
 
   describe("JWT Token Security", () => {
     it("Test 21.1: JWT Token - Expired Token Rejected", async () => {
-      const expiredToken = await createTestToken("testuser", jwtSecret, { expired: true });
+      const expiredToken = await createTestToken("testuser", ctx.config.jwtSecret, { expired: true });
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -89,7 +52,7 @@ describe("Security and Edge Cases Tests", () => {
       // Create token with wrong secret
       const wrongToken = await createTestToken("testuser", "wrong-secret-12345");
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -102,7 +65,7 @@ describe("Security and Edge Cases Tests", () => {
     });
 
     it("Test 21.3: JWT Token - Tampered Payload", async () => {
-      const validToken = await createTestToken("alice", jwtSecret);
+      const validToken = await createTestToken("alice", ctx.config.jwtSecret);
       
       // Tamper with the token (modify payload)
       const parts = validToken.split(".");
@@ -110,7 +73,7 @@ describe("Security and Edge Cases Tests", () => {
       const modifiedPayload = tamperedPayload.replace("alice", "bob");
       const tamperedToken = `${parts[0]}.${Buffer.from(modifiedPayload).toString("base64url")}.${parts[2]}`;
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -123,7 +86,7 @@ describe("Security and Edge Cases Tests", () => {
     });
 
     it("Test 21.4: JWT Token - Malformed Token", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -136,9 +99,9 @@ describe("Security and Edge Cases Tests", () => {
     });
 
     it("Test 21.5: JWT Token - Missing Bearer Prefix", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -151,10 +114,10 @@ describe("Security and Edge Cases Tests", () => {
     });
 
     it("Test 21.6: JWT Token - User A Token for User B Operations", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Try to use alice's token for bob's channel
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -171,9 +134,9 @@ describe("Security and Edge Cases Tests", () => {
 
   describe("Injection Prevention", () => {
     it("Test 21.7: Injection - SQL in Channel Name", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -192,7 +155,7 @@ describe("Security and Edge Cases Tests", () => {
       // Try to inject special characters that might affect Redis
       const maliciousUsername = "alice{$ne:null}";
       
-      const response = await fetch(`${TEST_API_URL}/auth/init`, {
+      const response = await fetch(`${ctx.config.apiUrl}/auth/init`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: maliciousUsername }),
@@ -201,15 +164,15 @@ describe("Security and Edge Cases Tests", () => {
       // Should treat the key literally
       expect(response.status).toBe(200);
       
-      const storedKey = await redis.get(`authsig:${maliciousUsername}`);
+      const storedKey = await ctx.redis.get(`authsig:${maliciousUsername}`);
       expect(storedKey).toBeDefined();
     });
 
     it("Test 21.9: Injection - XSS in Description", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
       const xssPayload = "<script>alert('xss')</script>";
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -224,15 +187,15 @@ describe("Security and Edge Cases Tests", () => {
       expect(response.status).toBe(200);
       
       // Verify stored literally (not executed)
-      const data = await redis.get("advertise:alice:updates");
+      const data = await ctx.redis.get("advertise:alice:updates");
       const parsed = JSON.parse(data!);
       expect(parsed.description).toBe(xssPayload);
     });
 
     it("Test 21.10: Path Traversal - Double Dot in Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -248,10 +211,10 @@ describe("Security and Edge Cases Tests", () => {
     });
 
     it("Test 21.11: Null Bytes in Strings", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
       const usernameWithNull = "alice\x00injected";
 
-      const response = await fetch(`${TEST_API_URL}/auth/init`, {
+      const response = await fetch(`${ctx.config.apiUrl}/auth/init`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: usernameWithNull }),
@@ -266,7 +229,7 @@ describe("Security and Edge Cases Tests", () => {
     it("Test 21.12: Unicode - Emoji in Username", async () => {
       const emojiUsername = "test😀user";
 
-      const response = await fetch(`${TEST_API_URL}/auth/init`, {
+      const response = await fetch(`${ctx.config.apiUrl}/auth/init`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: emojiUsername }),
@@ -282,7 +245,7 @@ describe("Security and Edge Cases Tests", () => {
       // RTL override character
       const rtlUsername = "test\u202Eevil\u202Cuser";
 
-      const response = await fetch(`${TEST_API_URL}/auth/init`, {
+      const response = await fetch(`${ctx.config.apiUrl}/auth/init`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: rtlUsername }),
@@ -296,7 +259,7 @@ describe("Security and Edge Cases Tests", () => {
       // Cyrillic 'а' looks like Latin 'a'
       const cyrillicUsername = "test\u0430user"; // Cyrillic а
 
-      const response = await fetch(`${TEST_API_URL}/auth/init`, {
+      const response = await fetch(`${ctx.config.apiUrl}/auth/init`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: cyrillicUsername }),
@@ -305,11 +268,11 @@ describe("Security and Edge Cases Tests", () => {
       expect(response.status).toBe(200);
       
       // Verify stored as different from Latin version
-      const stored = await redis.get(`authsig:${cyrillicUsername}`);
+      const stored = await ctx.redis.get(`authsig:${cyrillicUsername}`);
       expect(stored).toBeDefined();
       
       // Latin version should not exist
-      const latinVersion = await redis.get("authsig:testauser");
+      const latinVersion = await ctx.redis.get("authsig:testauser");
       expect(latinVersion).toBeNull();
     });
   });

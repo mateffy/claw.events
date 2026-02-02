@@ -1,75 +1,42 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test";
-import type { Server } from "bun";
-import { createClient, type RedisClientType } from "redis";
-
-// Test configuration
-const TEST_PORT = parseInt(process.env.PORT || "3001");
-const TEST_API_URL = `http://localhost:${TEST_PORT}`;
-
-// Helper function to create a valid token
-const createTestToken = async (username: string, jwtSecret: string): Promise<string> => {
-  const { SignJWT } = await import("jose");
-  const jwtKey = new TextEncoder().encode(jwtSecret);
-  return new SignJWT({})
-    .setProtectedHeader({ alg: "HS256" })
-    .setSubject(username)
-    .setIssuedAt()
-    .setExpirationTime("7d")
-    .sign(jwtKey);
-};
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
+import {
+  createTestContext,
+  startTestServer,
+  cleanupTestContext,
+  clearTestData,
+  createTestToken,
+  type TestContext,
+} from "./test-utils.ts";
 
 describe("Channel Advertising Endpoints", () => {
-  let server: Server;
-  let redis: RedisClientType;
-  let originalEnv: Record<string, string | undefined>;
-  let jwtSecret: string;
+  let ctx: TestContext;
 
   beforeAll(async () => {
-    originalEnv = { ...process.env };
-    
-    process.env.PORT = String(TEST_PORT);
-    jwtSecret = "test-jwt-secret-for-testing-only";
-    process.env.JWT_SECRET = jwtSecret;
-    process.env.REDIS_URL = "redis://localhost:6380";
-    process.env.CENTRIFUGO_API_URL = "http://localhost:8001/api";
-    process.env.CENTRIFUGO_API_KEY = "test-centrifugo-key";
-    process.env.MOLTBOOK_API_BASE = "http://localhost:9000/api/v1";
-    process.env.MOLTBOOK_API_KEY = "test-moltbook-key";
-    process.env.CLAW_DEV_MODE = "true";
-
-    redis = createClient({ url: process.env.REDIS_URL });
-    await redis.connect();
-
-    const { default: app } = await import("./index.ts");
-    server = Bun.serve({
-      fetch: app.fetch,
-      port: TEST_PORT,
-    });
+    ctx = await createTestContext();
+    await startTestServer(ctx);
   });
 
   afterAll(async () => {
-    if (server) {
-      server.stop();
-    }
-    if (redis) {
-      await redis.quit();
-    }
-    process.env = originalEnv;
+    await cleanupTestContext(ctx);
   });
 
   beforeEach(async () => {
-    // Clean up all advertisement keys
-    const keys = await redis.keys("advertise:*");
-    if (keys.length > 0) {
-      await redis.del(keys);
+    if (ctx.redis) {
+      await clearTestData(ctx.redis);
+    }
+  });
+
+  afterEach(async () => {
+    if (ctx.redis) {
+      await clearTestData(ctx.redis);
     }
   });
 
   describe("POST /api/advertise", () => {
     it("Test 12.1: POST /api/advertise - Happy Path with Description", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -90,10 +57,10 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 12.2: POST /api/advertise - With Schema", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
       const schema = { type: "object", properties: { temp: { type: "number" } } };
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -112,9 +79,9 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 12.3: POST /api/advertise - Redis Storage", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -127,7 +94,7 @@ describe("Channel Advertising Endpoints", () => {
       });
 
       // Check Redis
-      const data = await redis.get("advertise:alice:updates");
+      const data = await ctx.redis.get("advertise:alice:updates");
       expect(data).toBeDefined();
       const parsed = JSON.parse(data!);
       expect(parsed.channel).toBe("agent.alice.updates");
@@ -135,7 +102,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 12.4: POST /api/advertise - No Auth", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
@@ -148,9 +115,9 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 12.5: POST /api/advertise - Non-Owner", async () => {
-      const token = await createTestToken("bob", jwtSecret);
+      const token = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -168,9 +135,9 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 12.6: POST /api/advertise - Missing Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -185,9 +152,9 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 12.7: POST /api/advertise - Invalid Channel Format", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -203,9 +170,9 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 12.8: POST /api/advertise - Description Too Long (>5000)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -223,9 +190,9 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 12.9: POST /api/advertise - Description At Limit (5000)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -241,9 +208,9 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 12.10: POST /api/advertise - Invalid Description Type", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -261,10 +228,10 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 12.11: POST /api/advertise - Schema Too Large (>32KB)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
       const largeSchema = { data: "x".repeat(33000) };
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -282,10 +249,10 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 12.12: POST /api/advertise - Updates Existing", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Create initial advertisement
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -298,7 +265,7 @@ describe("Channel Advertising Endpoints", () => {
       });
 
       // Update it
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -313,7 +280,7 @@ describe("Channel Advertising Endpoints", () => {
       expect(response.status).toBe(200);
 
       // Verify Redis was updated
-      const data = await redis.get("advertise:alice:updates");
+      const data = await ctx.redis.get("advertise:alice:updates");
       const parsed = JSON.parse(data!);
       expect(parsed.description).toBe("Updated description");
     });
@@ -321,10 +288,10 @@ describe("Channel Advertising Endpoints", () => {
 
   describe("DELETE /api/advertise", () => {
     it("Test 13.1: DELETE /api/advertise - Happy Path", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Create first
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -337,7 +304,7 @@ describe("Channel Advertising Endpoints", () => {
       });
 
       // Delete
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "DELETE",
         headers: {
           "Content-Type": "application/json",
@@ -353,10 +320,10 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 13.2: DELETE /api/advertise - Redis Key Deleted", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Create
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -369,7 +336,7 @@ describe("Channel Advertising Endpoints", () => {
       });
 
       // Delete
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "DELETE",
         headers: {
           "Content-Type": "application/json",
@@ -379,12 +346,12 @@ describe("Channel Advertising Endpoints", () => {
       });
 
       // Verify Redis key is gone
-      const exists = await redis.exists("advertise:alice:updates");
+      const exists = await ctx.redis.exists("advertise:alice:updates");
       expect(exists).toBe(0);
     });
 
     it("Test 13.3: DELETE /api/advertise - No Auth", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ channel: "agent.alice.updates" }),
@@ -394,9 +361,9 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 13.4: DELETE /api/advertise - Non-Owner", async () => {
-      const token = await createTestToken("bob", jwtSecret);
+      const token = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "DELETE",
         headers: {
           "Content-Type": "application/json",
@@ -409,9 +376,9 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 13.5: DELETE /api/advertise - Not Found (Graceful)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "DELETE",
         headers: {
           "Content-Type": "application/json",
@@ -428,10 +395,10 @@ describe("Channel Advertising Endpoints", () => {
   describe("GET /api/advertise/search", () => {
     beforeEach(async () => {
       // Create several test advertisements
-      const token = await createTestToken("alice", jwtSecret);
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -443,7 +410,7 @@ describe("Channel Advertising Endpoints", () => {
         }),
       });
 
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -458,7 +425,7 @@ describe("Channel Advertising Endpoints", () => {
       // Small delay to ensure different timestamps
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -472,7 +439,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 14.1: GET /api/advertise/search - Happy Path", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/search?q=updates`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/search?q=updates`);
 
       expect(response.status).toBe(200);
       const body = await response.json();
@@ -483,7 +450,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 14.2: GET /api/advertise/search - By Channel Name", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/search?q=alice`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/search?q=alice`);
 
       const body = await response.json();
       const channels = body.results.map((r: any) => r.channel);
@@ -491,7 +458,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 14.3: GET /api/advertise/search - By Description", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/search?q=weather`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/search?q=weather`);
 
       const body = await response.json();
       const channels = body.results.map((r: any) => r.channel);
@@ -499,14 +466,14 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 14.4: GET /api/advertise/search - Case Insensitive", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/search?q=ALICE`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/search?q=ALICE`);
 
       const body = await response.json();
       expect(body.results.length).toBeGreaterThan(0);
     });
 
     it("Test 14.5: GET /api/advertise/search - Missing Query", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/search`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/search`);
 
       expect(response.status).toBe(400);
       const body = await response.json();
@@ -514,7 +481,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 14.6: GET /api/advertise/search - Empty Query", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/search?q=`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/search?q=`);
 
       expect(response.status).toBe(400);
       const body = await response.json();
@@ -523,9 +490,9 @@ describe("Channel Advertising Endpoints", () => {
 
     it("Test 14.7: GET /api/advertise/search - Limit Parameter", async () => {
       // Create 25 ads
-      const token = await createTestToken("limituser", jwtSecret);
+      const token = await createTestToken("limituser", ctx.config.jwtSecret);
       for (let i = 0; i < 25; i++) {
-        await fetch(`${TEST_API_URL}/api/advertise`, {
+        await fetch(`${ctx.config.apiUrl}/api/advertise`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -538,28 +505,28 @@ describe("Channel Advertising Endpoints", () => {
         });
       }
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise/search?q=limituser&limit=10`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/search?q=limituser&limit=10`);
 
       const body = await response.json();
       expect(body.results.length).toBeLessThanOrEqual(10);
     });
 
     it("Test 14.8: GET /api/advertise/search - Default Limit (20)", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/search?q=test`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/search?q=test`);
 
       const body = await response.json();
       expect(body.results.length).toBeLessThanOrEqual(20);
     });
 
     it("Test 14.9: GET /api/advertise/search - Max Limit (100)", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/search?q=a&limit=200`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/search?q=a&limit=200`);
 
       const body = await response.json();
       expect(body.results.length).toBeLessThanOrEqual(100);
     });
 
     it("Test 14.10: GET /api/advertise/search - No Results", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/search?q=nonexistentxyz123`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/search?q=nonexistentxyz123`);
 
       expect(response.status).toBe(200);
       const body = await response.json();
@@ -568,7 +535,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 14.11: GET /api/advertise/search - Sorted by updatedAt", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/search?q=updates`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/search?q=updates`);
 
       const body = await response.json();
       // Check results are sorted newest first
@@ -580,8 +547,8 @@ describe("Channel Advertising Endpoints", () => {
 
   describe("GET /api/advertise/list", () => {
     beforeEach(async () => {
-      const token = await createTestToken("listuser", jwtSecret);
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      const token = await createTestToken("listuser", ctx.config.jwtSecret);
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -595,7 +562,7 @@ describe("Channel Advertising Endpoints", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -609,7 +576,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 15.1: GET /api/advertise/list - Happy Path", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/list`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/list`);
 
       expect(response.status).toBe(200);
       const body = await response.json();
@@ -621,12 +588,12 @@ describe("Channel Advertising Endpoints", () => {
 
     it("Test 15.2: GET /api/advertise/list - Empty List", async () => {
       // Clear all ads
-      const keys = await redis.keys("advertise:*");
+      const keys = await ctx.redis.keys("advertise:*");
       if (keys.length > 0) {
-        await redis.del(keys);
+        await ctx.redis.del(keys);
       }
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise/list`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/list`);
 
       const body = await response.json();
       expect(body.channels).toEqual([]);
@@ -634,7 +601,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 15.3: GET /api/advertise/list - Sorted by updatedAt", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/list`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/list`);
 
       const body = await response.json();
       // Check sorted newest first
@@ -646,8 +613,8 @@ describe("Channel Advertising Endpoints", () => {
 
   describe("GET /api/advertise/:agent", () => {
     beforeEach(async () => {
-      const token = await createTestToken("specific", jwtSecret);
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      const token = await createTestToken("specific", ctx.config.jwtSecret);
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -659,7 +626,7 @@ describe("Channel Advertising Endpoints", () => {
         }),
       });
 
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -673,7 +640,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 16.1: GET /api/advertise/:agent - Happy Path", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/specific`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/specific`);
 
       expect(response.status).toBe(200);
       const body = await response.json();
@@ -684,7 +651,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 16.2: GET /api/advertise/:agent - Empty Result", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/nonexistent`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/nonexistent`);
 
       expect(response.status).toBe(200);
       const body = await response.json();
@@ -694,8 +661,8 @@ describe("Channel Advertising Endpoints", () => {
 
   describe("GET /api/advertise/:agent/:topic", () => {
     beforeEach(async () => {
-      const token = await createTestToken("detail", jwtSecret);
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      const token = await createTestToken("detail", ctx.config.jwtSecret);
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -710,7 +677,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 17.1: GET /api/advertise/:agent/:topic - Happy Path", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/detail/updates`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/detail/updates`);
 
       expect(response.status).toBe(200);
       const body = await response.json();
@@ -722,7 +689,7 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 17.2: GET /api/advertise/:agent/:topic - Not Found", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/advertise/detail/nonexistent`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/detail/nonexistent`);
 
       expect(response.status).toBe(404);
       const body = await response.json();
@@ -730,8 +697,8 @@ describe("Channel Advertising Endpoints", () => {
     });
 
     it("Test 17.3: GET /api/advertise/:agent/:topic - Multi-part Topic", async () => {
-      const token = await createTestToken("detail", jwtSecret);
-      await fetch(`${TEST_API_URL}/api/advertise`, {
+      const token = await createTestToken("detail", ctx.config.jwtSecret);
+      await fetch(`${ctx.config.apiUrl}/api/advertise`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -743,7 +710,7 @@ describe("Channel Advertising Endpoints", () => {
         }),
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/advertise/detail/data.sensor1`);
+      const response = await fetch(`${ctx.config.apiUrl}/api/advertise/detail/data.sensor1`);
 
       expect(response.status).toBe(200);
       const body = await response.json();

@@ -173,6 +173,22 @@ const requireAuth = async (authHeader?: string) => {
     return apiKeyUsername;
   }
 
+  // Check if this is a new-format API key (type: "apikey") that was revoked
+  // New API keys should NOT fall back to JWT validation - they must be in Redis
+  try {
+    const { payload } = await jwtVerify<AuthPayload & { type?: string }>(token, jwtKey);
+    if (payload.type === "apikey") {
+      // This is a new-format API key but not found in Redis - it was revoked or invalid
+      throw new Error("Invalid or revoked API key");
+    }
+  } catch (error) {
+    // If JWT verification fails, continue to old JWT fallback
+    // If it's the "revoked" error we just threw, re-throw it
+    if ((error as Error).message === "Invalid or revoked API key") {
+      throw error;
+    }
+  }
+
   // Fall back to old JWT validation (for transition period)
   try {
     const { payload } = await jwtVerify<AuthPayload>(token, jwtKey);

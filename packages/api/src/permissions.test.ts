@@ -1,102 +1,42 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
-import type { Server } from "bun";
-import { createClient, type RedisClientType } from "redis";
-import { SignJWT } from "jose";
-
-// Test configuration
-const TEST_PORT = parseInt(process.env.PORT || "3001");
-const TEST_API_URL = `http://localhost:${TEST_PORT}`;
-
-// Helper function to create a valid token
-const createTestToken = async (username: string, jwtSecret: string, options?: { expired?: boolean }): Promise<string> => {
-  const jwtKey = new TextEncoder().encode(jwtSecret);
-  const jwt = new SignJWT({})
-    .setProtectedHeader({ alg: "HS256" })
-    .setSubject(username)
-    .setIssuedAt();
-  
-  if (options?.expired) {
-    jwt.setExpirationTime("-1h");
-  } else {
-    jwt.setExpirationTime("7d");
-  }
-  
-  return jwt.sign(jwtKey);
-};
-
-// Global fetch mock for Moltbook API - must be set up before server import
-const globalFetchMock = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
-  const url = input.toString();
-  if (url.includes("localhost:9000/api/v1/agents/profile")) {
-    return Promise.resolve(new Response(
-      JSON.stringify({
-        success: true,
-        agent: {
-          description: "Test profile with claw-sig-placeholder",
-        },
-      }),
-      { status: 200, headers: { "Content-Type": "application/json" } }
-    ));
-  }
-  // Pass through other requests
-  return Promise.resolve(new Response("Not found", { status: 404 }));
-});
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, mock } from "bun:test";
+import {
+  createTestContext,
+  startTestServer,
+  cleanupTestContext,
+  clearTestData,
+  createTestToken,
+  type TestContext,
+} from "./test-utils.ts";
 
 describe("Permission Management Endpoints", () => {
-  let server: Server;
-  let redis: RedisClientType;
-  let originalEnv: Record<string, string | undefined>;
-  let jwtSecret: string;
+  let ctx: TestContext;
 
   beforeAll(async () => {
-    originalEnv = { ...process.env };
-    
-    process.env.PORT = String(TEST_PORT);
-    jwtSecret = "test-jwt-secret-for-testing-only";
-    process.env.JWT_SECRET = jwtSecret;
-    process.env.REDIS_URL = "redis://localhost:6380";
-    process.env.CENTRIFUGO_API_URL = "http://localhost:8001/api";
-    process.env.CENTRIFUGO_API_KEY = "test-centrifugo-key";
-    process.env.MOLTBOOK_API_BASE = "http://localhost:9000/api/v1";
-    process.env.MOLTBOOK_API_KEY = "test-moltbook-key";
-    process.env.CLAW_DEV_MODE = "true";
-
-    redis = createClient({ url: process.env.REDIS_URL });
-    await redis.connect();
-
-    // Import and start server (uses the mocked fetch)
-    const { default: app } = await import("./index.ts");
-    server = Bun.serve({
-      fetch: app.fetch,
-      port: TEST_PORT,
-    });
+    ctx = await createTestContext();
+    await startTestServer(ctx);
   });
 
   afterAll(async () => {
-    if (server) {
-      server.stop();
-    }
-    if (redis) {
-      await redis.quit();
-    }
-    process.env = originalEnv;
-    // Restore global fetch mock
-    globalFetchMock.mockRestore();
+    await cleanupTestContext(ctx);
   });
 
   beforeEach(async () => {
-    // Clean up all test keys
-    const keys = await redis.keys("locked:*");
-    const permKeys = await redis.keys("perm:*");
-    if (keys.length > 0) await redis.del(keys);
-    if (permKeys.length > 0) await redis.del(permKeys);
+    if (ctx.redis) {
+      await clearTestData(ctx.redis);
+    }
+  });
+
+  afterEach(async () => {
+    if (ctx.redis) {
+      await clearTestData(ctx.redis);
+    }
   });
 
   describe("POST /api/lock", () => {
     it("Test 6.1: POST /api/lock - Happy Path", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -113,9 +53,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 6.2: POST /api/lock - Redis Key Created", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -129,7 +69,7 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 6.3: POST /api/lock - No Auth Token", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ channel: "agent.alice.private" }),
@@ -141,7 +81,7 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 6.4: POST /api/lock - Invalid Token", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -154,9 +94,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 6.5: POST /api/lock - Non-Owner Tries to Lock", async () => {
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -171,9 +111,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 6.6: POST /api/lock - Missing Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -188,9 +128,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 6.7: POST /api/lock - Empty Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -205,9 +145,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 6.8: POST /api/lock - Invalid Channel Format", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -220,9 +160,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 6.9: POST /api/lock - public.* Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -237,9 +177,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 6.10: POST /api/lock - system.* Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -254,10 +194,10 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 6.11: POST /api/lock - Already Locked (Idempotent)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // First lock
-      const response1 = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response1 = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -267,7 +207,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Second lock (idempotent)
-      const response2 = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response2 = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -281,9 +221,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 6.12: POST /api/lock - Channel Belongs to Different Owner in Name", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/lock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -298,10 +238,10 @@ describe("Permission Management Endpoints", () => {
 
   describe("POST /api/unlock", () => {
     it("Test 7.1: POST /api/unlock - Happy Path", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Lock first
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -311,7 +251,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Then unlock
-      const response = await fetch(`${TEST_API_URL}/api/unlock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/unlock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -327,10 +267,10 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 7.2: POST /api/unlock - Redis Key Deleted", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Lock
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -340,7 +280,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Unlock
-      await fetch(`${TEST_API_URL}/api/unlock`, {
+      await fetch(`${ctx.config.apiUrl}/api/unlock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -354,7 +294,7 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 7.3: POST /api/unlock - No Auth", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/unlock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/unlock`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ channel: "agent.alice.test" }),
@@ -364,9 +304,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 7.4: POST /api/unlock - Non-Owner", async () => {
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/unlock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/unlock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -379,9 +319,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 7.5: POST /api/unlock - Not Locked (Graceful)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/unlock`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/unlock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -395,10 +335,10 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 7.6: POST /api/unlock - Grants Remain After Unlock", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Lock, grant, then unlock
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -407,7 +347,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.grantsremain" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/grant`, {
+      await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -416,7 +356,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ target: "bob", channel: "agent.alice.grantsremain" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/unlock`, {
+      await fetch(`${ctx.config.apiUrl}/api/unlock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -433,10 +373,10 @@ describe("Permission Management Endpoints", () => {
 
   describe("POST /api/grant", () => {
     it("Test 8.1: POST /api/grant - Happy Path", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Lock first
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -445,7 +385,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.grant" }),
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/grant`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -462,9 +402,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 8.2: POST /api/grant - Redis Set Updated", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -473,7 +413,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.grant2" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/grant`, {
+      await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -487,7 +427,7 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 8.3: POST /api/grant - No Auth", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/grant`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target: "bob", channel: "agent.alice.test" }),
@@ -497,9 +437,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 8.4: POST /api/grant - Non-Owner", async () => {
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/grant`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -512,9 +452,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 8.5: POST /api/grant - Missing Target", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/grant`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -529,9 +469,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 8.6: POST /api/grant - Missing Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/grant`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -544,10 +484,10 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 8.7: POST /api/grant - Grant on Unlocked Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Don't lock - just grant
-      const response = await fetch(`${TEST_API_URL}/api/grant`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -561,9 +501,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 8.8: POST /api/grant - Duplicate Grant (Idempotent)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -573,7 +513,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Grant twice
-      await fetch(`${TEST_API_URL}/api/grant`, {
+      await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -582,7 +522,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ target: "bob", channel: "agent.alice.dup" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/grant`, {
+      await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -597,9 +537,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 8.9: POST /api/grant - Grant to Self", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -608,7 +548,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.self" }),
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/grant`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -622,9 +562,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 8.10: POST /api/grant - Multiple Grants", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -635,7 +575,7 @@ describe("Permission Management Endpoints", () => {
 
       // Grant multiple users
       for (const user of ["bob", "charlie", "dave"]) {
-        await fetch(`${TEST_API_URL}/api/grant`, {
+        await fetch(`${ctx.config.apiUrl}/api/grant`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -654,10 +594,10 @@ describe("Permission Management Endpoints", () => {
 
   describe("POST /api/revoke", () => {
     it("Test 9.1: POST /api/revoke - Happy Path", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Setup: lock, grant, then revoke
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -666,7 +606,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.revoke" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/grant`, {
+      await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -675,7 +615,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ target: "bob", channel: "agent.alice.revoke" }),
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/revoke`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/revoke`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -691,9 +631,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 9.2: POST /api/revoke - Redis Set Updated", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -702,7 +642,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.revoke2" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/grant`, {
+      await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -711,7 +651,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ target: "bob", channel: "agent.alice.revoke2" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/revoke`, {
+      await fetch(`${ctx.config.apiUrl}/api/revoke`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -725,7 +665,7 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 9.3: POST /api/revoke - Centrifugo Disconnect Called", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
       let disconnectCalled = false;
 
       // Mock Centrifugo API
@@ -741,7 +681,7 @@ describe("Permission Management Endpoints", () => {
         return Promise.resolve(new Response("Not found", { status: 404 }));
       });
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -750,7 +690,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.revoke3" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/grant`, {
+      await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -759,7 +699,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ target: "bob", channel: "agent.alice.revoke3" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/revoke`, {
+      await fetch(`${ctx.config.apiUrl}/api/revoke`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -773,7 +713,7 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 9.4: POST /api/revoke - No Auth", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/revoke`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/revoke`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target: "bob", channel: "agent.alice.test" }),
@@ -783,9 +723,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 9.5: POST /api/revoke - Non-Owner", async () => {
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/revoke`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/revoke`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -798,9 +738,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 9.6: POST /api/revoke - Target Not Granted (Graceful)", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -810,7 +750,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Try to revoke without ever granting
-      const response = await fetch(`${TEST_API_URL}/api/revoke`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/revoke`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -824,9 +764,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 9.7: POST /api/revoke - Missing Target or Channel", async () => {
-      const token = await createTestToken("alice", jwtSecret);
+      const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/revoke`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/revoke`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -841,11 +781,11 @@ describe("Permission Management Endpoints", () => {
 
   describe("POST /api/request", () => {
     it("Test 10.1: POST /api/request - Happy Path", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
       // Alice locks channel
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -863,7 +803,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Bob requests access
-      const response = await fetch(`${TEST_API_URL}/api/request`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -884,8 +824,8 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.2: POST /api/request - Publishes to public.access", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
       let publishCalled = false;
       let publishChannel: string | null = null;
 
@@ -906,7 +846,7 @@ describe("Permission Management Endpoints", () => {
         return Promise.resolve(new Response("Not found", { status: 404 }));
       });
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -915,7 +855,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.request2" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/request`, {
+      await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -934,8 +874,8 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.3: POST /api/request - Request Format", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
       let capturedPayload: any = null;
 
       const mockFetch = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
@@ -954,7 +894,7 @@ describe("Permission Management Endpoints", () => {
         return Promise.resolve(new Response("Not found", { status: 404 }));
       });
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -963,7 +903,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.request3" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/request`, {
+      await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -987,7 +927,7 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.4: POST /api/request - No Auth", async () => {
-      const response = await fetch(`${TEST_API_URL}/api/request`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
@@ -1000,10 +940,10 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.5: POST /api/request - Channel Not Locked", async () => {
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
       // Don't lock the channel
-      const response = await fetch(`${TEST_API_URL}/api/request`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1021,11 +961,11 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.6: POST /api/request - Already Granted", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
       // Lock and grant bob
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1034,7 +974,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.granted" }),
       });
 
-      await fetch(`${TEST_API_URL}/api/grant`, {
+      await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1044,7 +984,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Bob tries to request (already has access)
-      const response = await fetch(`${TEST_API_URL}/api/request`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1062,9 +1002,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.7: POST /api/request - Own Channel", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1074,7 +1014,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Alice requests access to her own channel
-      const response = await fetch(`${TEST_API_URL}/api/request`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1091,9 +1031,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.8: POST /api/request - Missing Channel", async () => {
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/request`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1106,9 +1046,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.9: POST /api/request - Invalid Channel Format", async () => {
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/request`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1126,9 +1066,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.10: POST /api/request - public.* Channel", async () => {
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/request`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1144,9 +1084,9 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.11: POST /api/request - system.* Channel", async () => {
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const response = await fetch(`${TEST_API_URL}/api/request`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1162,12 +1102,12 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.12: POST /api/request - Centrifugo Not Configured", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
       const originalKey = process.env.CENTRIFUGO_API_KEY;
       process.env.CENTRIFUGO_API_KEY = "";
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1176,7 +1116,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.nocent" }),
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/request`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1196,8 +1136,8 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.13: POST /api/request - Centrifugo Publish Fails", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
       const mockFetch = mock(fetch, () => {
         return Promise.resolve(new Response(
@@ -1206,7 +1146,7 @@ describe("Permission Management Endpoints", () => {
         ));
       });
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1215,7 +1155,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.fail" }),
       });
 
-      const response = await fetch(`${TEST_API_URL}/api/request`, {
+      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1235,8 +1175,8 @@ describe("Permission Management Endpoints", () => {
     });
 
     it("Test 10.14: POST /api/request - Statistics Tracked", async () => {
-      const aliceToken = await createTestToken("alice", jwtSecret);
-      const bobToken = await createTestToken("bob", jwtSecret);
+      const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
+      const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
       const mockFetch = mock(fetch, () => {
         return Promise.resolve(new Response(
@@ -1245,7 +1185,7 @@ describe("Permission Management Endpoints", () => {
         ));
       });
 
-      await fetch(`${TEST_API_URL}/api/lock`, {
+      await fetch(`${ctx.config.apiUrl}/api/lock`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1258,7 +1198,7 @@ describe("Permission Management Endpoints", () => {
       const beforeStats = await redis.get("stats:total_messages");
       const beforeCount = parseInt(beforeStats || "0");
 
-      await fetch(`${TEST_API_URL}/api/request`, {
+      await fetch(`${ctx.config.apiUrl}/api/request`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
