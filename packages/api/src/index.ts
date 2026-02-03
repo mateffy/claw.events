@@ -219,6 +219,9 @@ const STATS_TOTAL_MESSAGES_KEY = "stats:total_messages";
 const STATS_MESSAGES_PER_MIN_KEY = "stats:messages_per_min";
 
 const trackAgent = async (agent: string) => {
+  if (isAppPrincipal(agent)) {
+    return;
+  }
   await redis.sAdd(STATS_AGENTS_KEY, agent);
 };
 
@@ -263,6 +266,27 @@ const isSystemChannel = (channel: string) => {
   return channel.startsWith("system.");
 };
 
+const APP_PRINCIPAL_PREFIX = "app:";
+
+const isAppPrincipal = (username: string) => username.startsWith(APP_PRINCIPAL_PREFIX);
+
+const parsePrincipal = (username: string) => {
+  if (isAppPrincipal(username)) {
+    return {
+      type: "app" as const,
+      name: username.slice(APP_PRINCIPAL_PREFIX.length),
+      principal: username
+    };
+  }
+  return {
+    type: "agent" as const,
+    name: username,
+    principal: username
+  };
+};
+
+const getAppPrincipal = (appName: string) => `${APP_PRINCIPAL_PREFIX}${appName}`;
+
 const parseAgentChannel = (channel: string) => {
   const parts = channelParts(channel);
   if (parts[0] !== "agent" || parts.length < 3) {
@@ -274,17 +298,67 @@ const parseAgentChannel = (channel: string) => {
   };
 };
 
+const parseAppChannel = (channel: string) => {
+  const parts = channelParts(channel);
+  if (parts[0] !== "app" || parts.length < 3) {
+    return null;
+  }
+  return {
+    app: parts[1],
+    topic: parts.slice(2).join(".")
+  };
+};
+
+const parseAppAgentChannel = (channel: string) => {
+  const parts = channelParts(channel);
+  if (parts[0] !== "app" || parts.length < 3 || parts[2] !== "agent") {
+    return null;
+  }
+  if (parts.length === 3) {
+    return { app: parts[1], agent: null as string | null, valid: true };
+  }
+  if (parts.length === 4) {
+    return { app: parts[1], agent: parts[3], valid: true };
+  }
+  return { app: parts[1], agent: null as string | null, valid: false };
+};
+
+
+const parseOwnedChannel = (channel: string) => {
+  const agentChannel = parseAgentChannel(channel);
+  if (agentChannel) {
+    return {
+      type: "agent" as const,
+      ownerName: agentChannel.owner,
+      ownerKey: agentChannel.owner,
+      topic: agentChannel.topic
+    };
+  }
+
+  const appChannel = parseAppChannel(channel);
+  if (appChannel) {
+    return {
+      type: "app" as const,
+      ownerName: appChannel.app,
+      ownerKey: getAppPrincipal(appChannel.app),
+      topic: appChannel.topic
+    };
+  }
+
+  return null;
+};
+
 // Check if a channel is locked (private)
-const isChannelLocked = async (owner: string, topic: string): Promise<boolean> => {
-  const key = `locked:${owner}:${topic}`;
+const isChannelLocked = async (ownerKey: string, topic: string): Promise<boolean> => {
+  const key = `locked:${ownerKey}:${topic}`;
   const exists = await redis.exists(key);
   return exists === 1;
 };
 
 // Check if user has permission to access a locked channel
-const hasChannelPermission = async (owner: string, topic: string, user: string): Promise<boolean> => {
-  if (user === owner) return true;
-  const key = `perm:${owner}:${topic}`;
+const hasChannelPermission = async (ownerKey: string, topic: string, user: string): Promise<boolean> => {
+  if (user === ownerKey) return true;
+  const key = `perm:${ownerKey}:${topic}`;
   return await redis.sIsMember(key, user);
 };
 
@@ -402,10 +476,10 @@ const validateJsonSchema = (data: unknown, schema: unknown): SchemaValidationErr
  * Fetch the JSON schema for a channel from its advertisement
  */
 const getChannelSchema = async (channel: string): Promise<unknown | null> => {
-  const agentChannel = parseAgentChannel(channel);
-  if (!agentChannel) return null;
+  const ownedChannel = parseOwnedChannel(channel);
+  if (!ownedChannel) return null;
 
-  const key = `advertise:${agentChannel.owner}:${agentChannel.topic}`;
+  const key = `advertise:${ownedChannel.ownerKey}:${ownedChannel.topic}`;
   const data = await redis.get(key);
   if (!data) return null;
 
@@ -619,6 +693,60 @@ app.post("/proxy/subscribe", async (c) => {
     return c.json(respondProxyAllow());
   }
 
+  const appAgentChannel = parseAppAgentChannel(channel);
+  if (appAgentChannel) {
+    if (!appAgentChannel.valid) {
+      return c.json(respondProxyDeny());
+    }
+    if (!subscriber) {
+      return c.json(respondProxyDeny());
+    }
+
+    const principal = parsePrincipal(subscriber);
+    const appPrincipal = getAppPrincipal(appAgentChannel.app);
+
+    if (appAgentChannel.agent === null) {
+      if (principal.type === "app") {
+        return principal.principal === appPrincipal
+          ? c.json(respondProxyAllow())
+          : c.json(respondProxyDeny());
+      }
+      return c.json(respondProxyAllow());
+    }
+
+    if (principal.type === "app") {
+      return principal.principal === appPrincipal
+        ? c.json(respondProxyAllow())
+        : c.json(respondProxyDeny());
+    }
+
+    if (principal.type === "agent" && principal.name === appAgentChannel.agent) {
+      return c.json(respondProxyAllow());
+    }
+
+    return c.json(respondProxyDeny());
+  }
+
+  const appChannel = parseAppChannel(channel);
+  if (appChannel) {
+    const ownerKey = getAppPrincipal(appChannel.app);
+    const locked = await isChannelLocked(ownerKey, appChannel.topic);
+    if (!locked) {
+      return c.json(respondProxyAllow());
+    }
+    if (!subscriber) {
+      return c.json(respondProxyDeny());
+    }
+    if (subscriber === ownerKey) {
+      return c.json(respondProxyAllow());
+    }
+    const allowed = await hasChannelPermission(ownerKey, appChannel.topic, subscriber);
+    if (allowed) {
+      return c.json(respondProxyAllow());
+    }
+    return c.json(respondProxyDeny());
+  }
+
   const agentChannel = parseAgentChannel(channel);
   if (!agentChannel) {
     return c.json(respondProxyDeny());
@@ -670,6 +798,47 @@ app.post("/proxy/publish", async (c) => {
     return c.json(respondProxyAllow());
   }
 
+  const appAgentChannel = parseAppAgentChannel(channel);
+  if (appAgentChannel) {
+    if (!appAgentChannel.valid) {
+      return c.json(respondProxyDeny());
+    }
+    if (!publisher) {
+      return c.json(respondProxyDeny());
+    }
+
+    const principal = parsePrincipal(publisher);
+    const appPrincipal = getAppPrincipal(appAgentChannel.app);
+
+    if (appAgentChannel.agent === null) {
+      return principal.type === "app" && principal.principal === appPrincipal
+        ? c.json(respondProxyAllow())
+        : c.json(respondProxyDeny());
+    }
+
+    if (principal.type === "app" && principal.principal === appPrincipal) {
+      return c.json(respondProxyAllow());
+    }
+
+    if (principal.type === "agent" && principal.name === appAgentChannel.agent) {
+      return c.json(respondProxyAllow());
+    }
+
+    return c.json(respondProxyDeny());
+  }
+
+  const appChannel = parseAppChannel(channel);
+  if (appChannel) {
+    if (!publisher) {
+      return c.json(respondProxyDeny());
+    }
+    const principal = parsePrincipal(publisher);
+    const appPrincipal = getAppPrincipal(appChannel.app);
+    return principal.type === "app" && principal.principal === appPrincipal
+      ? c.json(respondProxyAllow())
+      : c.json(respondProxyDeny());
+  }
+
   const agentChannel = parseAgentChannel(channel);
   if (!agentChannel) {
     return c.json(respondProxyDeny());
@@ -698,6 +867,7 @@ app.post("/api/lock", async (c) => {
   } catch (error) {
     return c.json({ error: (error as Error).message }, 401);
   }
+  const principal = parsePrincipal(owner);
 
   const body = await c.req.json<{ channel?: string }>();
   const channel = body?.channel?.trim();
@@ -706,12 +876,29 @@ app.post("/api/lock", async (c) => {
     return c.json({ error: "channel required" }, 400);
   }
 
-  const agentChannel = parseAgentChannel(channel);
-  if (!agentChannel || agentChannel.owner !== owner) {
-    return c.json({ error: "can only lock your own channels" }, 403);
+  const appAgentChannel = parseAppAgentChannel(channel);
+  if (appAgentChannel) {
+    return appAgentChannel.valid
+      ? c.json({ error: "cannot lock app.agent reserved channels" }, 403)
+      : c.json({ error: "invalid channel format" }, 400);
   }
 
-  const key = `locked:${owner}:${agentChannel.topic}`;
+  const ownedChannel = parseOwnedChannel(channel);
+  if (!ownedChannel) {
+    return c.json({ error: "invalid channel format" }, 400);
+  }
+
+  if (ownedChannel.type === "agent") {
+    if (principal.type !== "agent" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only lock your own channels" }, 403);
+    }
+  } else {
+    if (principal.type !== "app" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only lock your own channels" }, 403);
+    }
+  }
+
+  const key = `locked:${ownedChannel.ownerKey}:${ownedChannel.topic}`;
   await redis.set(key, "1");
 
   return c.json({ ok: true, locked: true, channel });
@@ -724,6 +911,7 @@ app.post("/api/unlock", async (c) => {
   } catch (error) {
     return c.json({ error: (error as Error).message }, 401);
   }
+  const principal = parsePrincipal(owner);
 
   const body = await c.req.json<{ channel?: string }>();
   const channel = body?.channel?.trim();
@@ -732,12 +920,29 @@ app.post("/api/unlock", async (c) => {
     return c.json({ error: "channel required" }, 400);
   }
 
-  const agentChannel = parseAgentChannel(channel);
-  if (!agentChannel || agentChannel.owner !== owner) {
-    return c.json({ error: "can only unlock your own channels" }, 403);
+  const appAgentChannel = parseAppAgentChannel(channel);
+  if (appAgentChannel) {
+    return appAgentChannel.valid
+      ? c.json({ error: "cannot unlock app.agent reserved channels" }, 403)
+      : c.json({ error: "invalid channel format" }, 400);
   }
 
-  const key = `locked:${owner}:${agentChannel.topic}`;
+  const ownedChannel = parseOwnedChannel(channel);
+  if (!ownedChannel) {
+    return c.json({ error: "invalid channel format" }, 400);
+  }
+
+  if (ownedChannel.type === "agent") {
+    if (principal.type !== "agent" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only unlock your own channels" }, 403);
+    }
+  } else {
+    if (principal.type !== "app" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only unlock your own channels" }, 403);
+    }
+  }
+
+  const key = `locked:${ownedChannel.ownerKey}:${ownedChannel.topic}`;
   await redis.del(key);
 
   return c.json({ ok: true, unlocked: true, channel });
@@ -751,6 +956,7 @@ app.post("/api/grant", async (c) => {
   } catch (error) {
     return c.json({ error: (error as Error).message }, 401);
   }
+  const principal = parsePrincipal(owner);
 
   const body = await c.req.json<{ target?: string; channel?: string }>();
   const target = body?.target?.trim();
@@ -760,12 +966,29 @@ app.post("/api/grant", async (c) => {
     return c.json({ error: "target and channel required" }, 400);
   }
 
-  const agentChannel = parseAgentChannel(channel);
-  if (!agentChannel || agentChannel.owner !== owner) {
-    return c.json({ error: "can only grant access to your own channels" }, 403);
+  const appAgentChannel = parseAppAgentChannel(channel);
+  if (appAgentChannel) {
+    return appAgentChannel.valid
+      ? c.json({ error: "cannot grant access to app.agent reserved channels" }, 403)
+      : c.json({ error: "invalid channel format" }, 400);
   }
 
-  const key = `perm:${owner}:${agentChannel.topic}`;
+  const ownedChannel = parseOwnedChannel(channel);
+  if (!ownedChannel) {
+    return c.json({ error: "invalid channel format" }, 400);
+  }
+
+  if (ownedChannel.type === "agent") {
+    if (principal.type !== "agent" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only grant access to your own channels" }, 403);
+    }
+  } else {
+    if (principal.type !== "app" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only grant access to your own channels" }, 403);
+    }
+  }
+
+  const key = `perm:${ownedChannel.ownerKey}:${ownedChannel.topic}`;
   await redis.sAdd(key, target);
   return c.json({ ok: true, granted: true, target, channel });
 });
@@ -777,6 +1000,7 @@ app.post("/api/revoke", async (c) => {
   } catch (error) {
     return c.json({ error: (error as Error).message }, 401);
   }
+  const principal = parsePrincipal(owner);
 
   const body = await c.req.json<{ target?: string; channel?: string }>();
   const target = body?.target?.trim();
@@ -786,12 +1010,29 @@ app.post("/api/revoke", async (c) => {
     return c.json({ error: "target and channel required" }, 400);
   }
 
-  const agentChannel = parseAgentChannel(channel);
-  if (!agentChannel || agentChannel.owner !== owner) {
-    return c.json({ error: "can only revoke access from your own channels" }, 403);
+  const appAgentChannel = parseAppAgentChannel(channel);
+  if (appAgentChannel) {
+    return appAgentChannel.valid
+      ? c.json({ error: "cannot revoke access from app.agent reserved channels" }, 403)
+      : c.json({ error: "invalid channel format" }, 400);
   }
 
-  const key = `perm:${owner}:${agentChannel.topic}`;
+  const ownedChannel = parseOwnedChannel(channel);
+  if (!ownedChannel) {
+    return c.json({ error: "invalid channel format" }, 400);
+  }
+
+  if (ownedChannel.type === "agent") {
+    if (principal.type !== "agent" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only revoke access from your own channels" }, 403);
+    }
+  } else {
+    if (principal.type !== "app" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only revoke access from your own channels" }, 403);
+    }
+  }
+
+  const key = `perm:${ownedChannel.ownerKey}:${ownedChannel.topic}`;
   await redis.sRem(key, target);
 
   // Disconnect user from channel if they're currently connected
@@ -833,19 +1074,26 @@ app.post("/api/request", async (c) => {
     return c.json({ error: "channel required" }, 400);
   }
 
-  const agentChannel = parseAgentChannel(channel);
-  if (!agentChannel) {
+  const appAgentChannel = parseAppAgentChannel(channel);
+  if (appAgentChannel) {
+    return appAgentChannel.valid
+      ? c.json({ error: "access requests are not supported for app.agent reserved channels" }, 403)
+      : c.json({ error: "invalid channel format" }, 400);
+  }
+
+  const ownedChannel = parseOwnedChannel(channel);
+  if (!ownedChannel) {
     return c.json({ error: "invalid channel format" }, 400);
   }
 
   // Check if channel is actually locked
-  const locked = await isChannelLocked(agentChannel.owner, agentChannel.topic);
+  const locked = await isChannelLocked(ownedChannel.ownerKey, ownedChannel.topic);
   if (!locked) {
     return c.json({ error: "channel is not locked, access is public" }, 400);
   }
 
   // Check if already granted
-  const alreadyGranted = await hasChannelPermission(agentChannel.owner, agentChannel.topic, requester);
+  const alreadyGranted = await hasChannelPermission(ownedChannel.ownerKey, ownedChannel.topic, requester);
   if (alreadyGranted) {
     return c.json({ error: "you already have access to this channel" }, 400);
   }
@@ -859,7 +1107,10 @@ app.post("/api/request", async (c) => {
     type: "access_request",
     requester,
     targetChannel: channel,
-    targetAgent: agentChannel.owner,
+    targetType: ownedChannel.type,
+    targetOwner: ownedChannel.ownerName,
+    targetAgent: ownedChannel.type === "agent" ? ownedChannel.ownerName : null,
+    targetApp: ownedChannel.type === "app" ? ownedChannel.ownerName : null,
     reason,
     timestamp: Date.now()
   };
@@ -922,6 +1173,7 @@ app.post("/api/publish", async (c) => {
   } catch (error) {
     return c.json({ error: (error as Error).message }, 401);
   }
+  const principal = parsePrincipal(owner);
 
   const body = await c.req.json<{ channel?: string; payload?: unknown }>();
   const channel = body?.channel?.trim();
@@ -956,17 +1208,39 @@ app.post("/api/publish", async (c) => {
     }
   }
 
-  // For agent channels, verify ownership or permission
+  // For non-public channels, verify ownership or permission
   if (!isPublicChannel(channel)) {
-    const agentChannel = parseAgentChannel(channel);
-    if (!agentChannel) {
-      return c.json({ error: "invalid channel format" }, 400);
-    }
-
-    // Only the owner can publish to their agent channels
-    // The "lock" feature controls read/subscription access, not write access
-    if (agentChannel.owner !== owner) {
-      return c.json({ error: "only the channel owner can publish to agent.* channels" }, 403);
+    const appAgentChannel = parseAppAgentChannel(channel);
+    if (appAgentChannel) {
+      if (!appAgentChannel.valid) {
+        return c.json({ error: "invalid channel format" }, 400);
+      }
+      if (appAgentChannel.agent === null) {
+        if (principal.type !== "app" || principal.name !== appAgentChannel.app) {
+          return c.json({ error: "only the app can publish to app.<app>.agent" }, 403);
+        }
+      } else {
+        const isAppOwner = principal.type === "app" && principal.name === appAgentChannel.app;
+        const isAgentOwner = principal.type === "agent" && principal.name === appAgentChannel.agent;
+        if (!isAppOwner && !isAgentOwner) {
+          return c.json({ error: "only the app or target agent can publish to app.<app>.agent.<agent>" }, 403);
+        }
+      }
+    } else {
+      const appChannel = parseAppChannel(channel);
+      if (appChannel) {
+        if (principal.type !== "app" || principal.name !== appChannel.app) {
+          return c.json({ error: "only the app can publish to app.* channels" }, 403);
+        }
+      } else {
+        const agentChannel = parseAgentChannel(channel);
+        if (!agentChannel) {
+          return c.json({ error: "invalid channel format" }, 400);
+        }
+        if (principal.type !== "agent" || principal.name !== agentChannel.owner) {
+          return c.json({ error: "only the channel owner can publish to agent.* channels" }, 403);
+        }
+      }
     }
   }
 
@@ -1032,6 +1306,7 @@ app.post("/api/advertise", async (c) => {
   } catch (error) {
     return c.json({ error: (error as Error).message }, 401);
   }
+  const principal = parsePrincipal(owner);
 
   const body = await c.req.json<{
     channel?: string;
@@ -1048,9 +1323,26 @@ app.post("/api/advertise", async (c) => {
   }
 
   // Validate channel ownership
-  const agentChannel = parseAgentChannel(channel);
-  if (!agentChannel || agentChannel.owner !== owner) {
-    return c.json({ error: "can only advertise your own channels" }, 403);
+  const appAgentChannel = parseAppAgentChannel(channel);
+  if (appAgentChannel) {
+    return appAgentChannel.valid
+      ? c.json({ error: "cannot advertise app.agent reserved channels" }, 403)
+      : c.json({ error: "invalid channel format" }, 400);
+  }
+
+  const ownedChannel = parseOwnedChannel(channel);
+  if (!ownedChannel) {
+    return c.json({ error: "invalid channel format" }, 400);
+  }
+
+  if (ownedChannel.type === "agent") {
+    if (principal.type !== "agent" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only advertise your own channels" }, 403);
+    }
+  } else {
+    if (principal.type !== "app" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only advertise your own channels" }, 403);
+    }
   }
 
   // Validate description length
@@ -1072,7 +1364,7 @@ app.post("/api/advertise", async (c) => {
   }
 
   // Store in Redis
-  const key = `advertise:${owner}:${agentChannel.topic}`;
+  const key = `advertise:${ownedChannel.ownerKey}:${ownedChannel.topic}`;
   const data = {
     channel,
     description: description ?? null,
@@ -1092,6 +1384,7 @@ app.delete("/api/advertise", async (c) => {
   } catch (error) {
     return c.json({ error: (error as Error).message }, 401);
   }
+  const principal = parsePrincipal(owner);
 
   const body = await c.req.json<{ channel?: string }>();
   const channel = body?.channel?.trim();
@@ -1100,12 +1393,29 @@ app.delete("/api/advertise", async (c) => {
     return c.json({ error: "channel required" }, 400);
   }
 
-  const agentChannel = parseAgentChannel(channel);
-  if (!agentChannel || agentChannel.owner !== owner) {
-    return c.json({ error: "can only remove your own advertisements" }, 403);
+  const appAgentChannel = parseAppAgentChannel(channel);
+  if (appAgentChannel) {
+    return appAgentChannel.valid
+      ? c.json({ error: "cannot remove advertisements from app.agent reserved channels" }, 403)
+      : c.json({ error: "invalid channel format" }, 400);
   }
 
-  const key = `advertise:${owner}:${agentChannel.topic}`;
+  const ownedChannel = parseOwnedChannel(channel);
+  if (!ownedChannel) {
+    return c.json({ error: "invalid channel format" }, 400);
+  }
+
+  if (ownedChannel.type === "agent") {
+    if (principal.type !== "agent" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only remove your own advertisements" }, 403);
+    }
+  } else {
+    if (principal.type !== "app" || principal.name !== ownedChannel.ownerName) {
+      return c.json({ error: "can only remove your own advertisements" }, 403);
+    }
+  }
+
+  const key = `advertise:${ownedChannel.ownerKey}:${ownedChannel.topic}`;
   await redis.del(key);
 
   return c.json({ ok: true, removed: true });
