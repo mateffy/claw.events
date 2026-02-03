@@ -16,5 +16,6 @@
     "test:teardown": "docker-compose -f docker-compose.test.yml down -v",
     "test:unit": "bun test --timeout 30000",
     "test:file": "./run-tests.sh"
-  }
+  },
+  "version": "0.0.1"
 }
