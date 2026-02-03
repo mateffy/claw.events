@@ -10,8 +10,17 @@ const app = new Hono();
 const port = Number(process.env.PORT ?? 3000);
 const jwtSecret = process.env.JWT_SECRET ?? "";
 const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
-const centrifugoApiUrl = process.env.CENTRIFUGO_API_URL ?? "http://localhost:8000/api";
-const centrifugoApiKey = process.env.CENTRIFUGO_API_KEY ?? "";
+const getCentrifugoApiUrl = () => process.env.CENTRIFUGO_API_URL ?? "http://localhost:8000/api";
+let centrifugoApiKeyOverride: string | null = null;
+export const setCentrifugoApiKey = (value: string | null) => {
+  centrifugoApiKeyOverride = value;
+};
+const getCentrifugoApiKey = () => {
+  if (centrifugoApiKeyOverride !== null) {
+    return centrifugoApiKeyOverride;
+  }
+  return process.env.CENTRIFUGO_API_KEY ?? "";
+};
 const moltbookApiBase = process.env.MOLTBOOK_API_BASE || "https://www.moltbook.com/api/v1";
 const moltbookApiKey = process.env.MOLTBOOK_API_KEY ?? "";
 const devMode = process.env.CLAW_DEV_MODE === "true" || process.env.NODE_ENV === "development";
@@ -786,8 +795,9 @@ app.post("/api/revoke", async (c) => {
   await redis.sRem(key, target);
 
   // Disconnect user from channel if they're currently connected
+  const centrifugoApiKey = getCentrifugoApiKey();
   if (centrifugoApiKey) {
-    await fetch(centrifugoApiUrl, {
+    await fetch(getCentrifugoApiUrl(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -840,7 +850,7 @@ app.post("/api/request", async (c) => {
     return c.json({ error: "you already have access to this channel" }, 400);
   }
 
-  if (!centrifugoApiKey) {
+  if (!getCentrifugoApiKey()) {
     return c.json({ error: "CENTRIFUGO_API_KEY not configured" }, 500);
   }
 
@@ -854,11 +864,11 @@ app.post("/api/request", async (c) => {
     timestamp: Date.now()
   };
 
-  const response = await fetch(centrifugoApiUrl, {
+  const response = await fetch(getCentrifugoApiUrl(), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `apikey ${centrifugoApiKey}`
+      Authorization: `apikey ${getCentrifugoApiKey()}`
     },
     body: JSON.stringify({
       method: "publish",
@@ -974,15 +984,15 @@ app.post("/api/publish", async (c) => {
     }
   }
 
-  if (!centrifugoApiKey) {
+  if (!getCentrifugoApiKey()) {
     return c.json({ error: "CENTRIFUGO_API_KEY not configured" }, 500);
   }
 
-  const response = await fetch(centrifugoApiUrl, {
+  const response = await fetch(getCentrifugoApiUrl(), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `apikey ${centrifugoApiKey}`
+      Authorization: `apikey ${getCentrifugoApiKey()}`
     },
     body: JSON.stringify({
       method: "publish",
@@ -1159,6 +1169,44 @@ app.get("/api/advertise/search", async (c) => {
   });
 });
 
+// List all advertised channels (no agent = all channels)
+app.get("/api/advertise/list", async (c) => {
+  // Scan for all advertisements
+  const pattern = "advertise:*:*";
+  const keys: string[] = [];
+  let cursor = 0;
+  
+  do {
+    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+    cursor = result.cursor;
+    keys.push(...result.keys);
+  } while (cursor !== 0);
+  
+  const channels = [];
+  for (const key of keys) {
+    const data = await redis.get(key);
+    if (data) {
+      const parsed = JSON.parse(data);
+      channels.push({
+        channel: parsed.channel,
+        description: parsed.description,
+        schema: parsed.schema,
+        updatedAt: parsed.updatedAt,
+        agent: parsed.channel?.split(".")[1] ?? null
+      });
+    }
+  }
+  
+  // Sort by updatedAt descending (newest first)
+  channels.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  
+  return c.json({
+    ok: true,
+    channels,
+    count: channels.length
+  });
+});
+
 app.get("/api/advertise/:agent", async (c) => {
   const agent = c.req.param("agent");
   
@@ -1198,43 +1246,6 @@ app.get("/api/advertise/:agent/:topic", async (c) => {
   return c.json({ ok: true, ...JSON.parse(data) });
 });
 
-// List all advertised channels (no agent = all channels)
-app.get("/api/advertise/list", async (c) => {
-  // Scan for all advertisements
-  const pattern = "advertise:*:*";
-  const keys: string[] = [];
-  let cursor = 0;
-  
-  do {
-    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
-    cursor = result.cursor;
-    keys.push(...result.keys);
-  } while (cursor !== 0);
-  
-  const channels = [];
-  for (const key of keys) {
-    const data = await redis.get(key);
-    if (data) {
-      const parsed = JSON.parse(data);
-      channels.push({
-        channel: parsed.channel,
-        description: parsed.description,
-        schema: parsed.schema,
-        updatedAt: parsed.updatedAt,
-        agent: parsed.channel?.split(".")[1] ?? null
-      });
-    }
-  }
-  
-  // Sort by updatedAt descending (newest first)
-  channels.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-  
-  return c.json({
-    ok: true,
-    channels,
-    count: channels.length
-  });
-});
 
 // Public profile endpoint - lists all advertised channels for an agent
 app.get("/api/profile/:agent", async (c) => {
@@ -5054,7 +5065,7 @@ For AI agent instructions: https://claw.events/skill.md';
 
 // System timer events - published by the server, not users
 // These are public channels that broadcast time-based events
-if (centrifugoApiKey) {
+if (getCentrifugoApiKey()) {
   let lastSecond = -1;
   let lastMinute = -1;
   let lastHour = -1;
@@ -5167,14 +5178,14 @@ if (centrifugoApiKey) {
 }
 
 async function publishSystemEvent(channel: string, data: unknown) {
-  if (!centrifugoApiKey) return;
+  if (!getCentrifugoApiKey()) return;
   
   try {
-    await fetch(centrifugoApiUrl, {
+    await fetch(getCentrifugoApiUrl(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `apikey ${centrifugoApiKey}`
+        Authorization: `apikey ${getCentrifugoApiKey()}`
       },
       body: JSON.stringify({
         method: "publish",

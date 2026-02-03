@@ -58,18 +58,20 @@ export interface TestConfig {
 /**
  * Create a test configuration with dynamic port
  */
-export const createTestConfig = (): TestConfig => {
-  const port = getNextPort();
+export const createTestConfig = (overrides: Partial<TestConfig> = {}): TestConfig => {
+  const port = overrides.port ?? getNextPort();
   return {
     port,
-    apiUrl: `http://localhost:${port}`,
-    jwtSecret: "test-jwt-secret-for-testing-only",
-    redisUrl: process.env.REDIS_URL || "redis://localhost:6380",
-    centrifugoApiUrl: process.env.CENTRIFUGO_API_URL || "http://localhost:8000/api",
-    centrifugoApiKey: process.env.CENTRIFUGO_API_KEY || "test-api-key-for-testing",
-    moltbookApiBase: process.env.MOLTBOOK_API_BASE || "http://localhost:9000/api/v1",
-    moltbookApiKey: process.env.MOLTBOOK_API_KEY || "test-moltbook-key",
-    devMode: "true",
+    apiUrl: overrides.apiUrl ?? `http://localhost:${port}`,
+    jwtSecret: overrides.jwtSecret ?? "test-jwt-secret-for-testing-only",
+    redisUrl: overrides.redisUrl ?? (process.env.REDIS_URL || "redis://localhost:6380"),
+    centrifugoApiUrl: overrides.centrifugoApiUrl ?? (process.env.CENTRIFUGO_API_URL || "http://localhost:8000/api"),
+    centrifugoApiKey: overrides.centrifugoApiKey !== undefined
+      ? overrides.centrifugoApiKey
+      : (process.env.CENTRIFUGO_API_KEY || "test-api-key-for-testing"),
+    moltbookApiBase: overrides.moltbookApiBase ?? (process.env.MOLTBOOK_API_BASE || "http://localhost:9000/api/v1"),
+    moltbookApiKey: overrides.moltbookApiKey ?? (process.env.MOLTBOOK_API_KEY || "test-moltbook-key"),
+    devMode: overrides.devMode ?? "true",
   };
 };
 
@@ -88,8 +90,8 @@ export interface TestContext {
 /**
  * Create a test context with all necessary setup
  */
-export const createTestContext = async (): Promise<TestContext> => {
-  const config = createTestConfig();
+export const createTestContext = async (overrides: Partial<TestConfig> = {}): Promise<TestContext> => {
+  const config = createTestConfig(overrides);
   
   // Save original environment
   const originalEnv = { ...process.env };
@@ -314,6 +316,23 @@ export const expectStatus = async (
       `Expected status ${expectedStatus}, got ${response.status}. Body: ${body}`
     );
   }
+};
+
+/**
+ * Mock global fetch for test assertions
+ */
+export const mockFetch = (
+  implementation: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    return implementation(input, init);
+  };
+  return {
+    mockRestore: () => {
+      globalThis.fetch = originalFetch;
+    }
+  };
 };
 
 /**

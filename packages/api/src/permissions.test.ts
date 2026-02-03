@@ -5,8 +5,10 @@ import {
   cleanupTestContext,
   clearTestData,
   createTestToken,
+  mockFetch as createFetchMock,
   type TestContext,
 } from "./test-utils.ts";
+import { setCentrifugoApiKey } from "./index.ts";
 
 describe("Permission Management Endpoints", () => {
   let ctx: TestContext;
@@ -30,7 +32,22 @@ describe("Permission Management Endpoints", () => {
     if (ctx.redis) {
       await clearTestData(ctx.redis);
     }
+    mock.restore();
   });
+
+  // Helper to mock Centrifugo API calls for endpoints that use it
+  const mockCentrifugo = () => {
+    return createFetchMock((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes(":800") || url.includes("localhost:800")) {
+        return Promise.resolve(new Response(
+          JSON.stringify({ result: { published: true } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        ));
+      }
+      return Promise.resolve(new Response("Not found", { status: 404 }));
+    });
+  };
 
   describe("POST /api/lock", () => {
     it("Test 6.1: POST /api/lock - Happy Path", async () => {
@@ -64,7 +81,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.private" }),
       });
 
-      const value = await redis.get("locked:alice:private");
+      const value = await ctx.redis.get("locked:alice:private");
       expect(value).toBe("1");
     });
 
@@ -289,7 +306,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.unlock2" }),
       });
 
-      const exists = await redis.exists("locked:alice:unlock2");
+      const exists = await ctx.redis.exists("locked:alice:unlock2");
       expect(exists).toBe(0);
     });
 
@@ -366,7 +383,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Grant should still exist
-      const members = await redis.sMembers("perm:alice:grantsremain");
+      const members = await ctx.redis.sMembers("perm:alice:grantsremain");
       expect(members).toContain("bob");
     });
   });
@@ -422,7 +439,7 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ target: "bob", channel: "agent.alice.grant2" }),
       });
 
-      const members = await redis.sMembers("perm:alice:grant2");
+      const members = await ctx.redis.sMembers("perm:alice:grant2");
       expect(members).toContain("bob");
     });
 
@@ -532,7 +549,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Should only be in set once
-      const members = await redis.sMembers("perm:alice:dup");
+      const members = await ctx.redis.sMembers("perm:alice:dup");
       expect(members.filter(m => m === "bob").length).toBe(1);
     });
 
@@ -585,7 +602,7 @@ describe("Permission Management Endpoints", () => {
         });
       }
 
-      const members = await redis.sMembers("perm:alice:multi");
+      const members = await ctx.redis.sMembers("perm:alice:multi");
       expect(members).toContain("bob");
       expect(members).toContain("charlie");
       expect(members).toContain("dave");
@@ -615,6 +632,9 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ target: "bob", channel: "agent.alice.revoke" }),
       });
 
+      // Mock Centrifugo disconnect call
+      const mockFetch = mockCentrifugo();
+
       const response = await fetch(`${ctx.config.apiUrl}/api/revoke`, {
         method: "POST",
         headers: {
@@ -628,6 +648,8 @@ describe("Permission Management Endpoints", () => {
       const body = await response.json();
       expect(body.ok).toBe(true);
       expect(body.revoked).toBe(true);
+
+      mockFetch.mockRestore();
     });
 
     it("Test 9.2: POST /api/revoke - Redis Set Updated", async () => {
@@ -641,6 +663,9 @@ describe("Permission Management Endpoints", () => {
         },
         body: JSON.stringify({ channel: "agent.alice.revoke2" }),
       });
+
+      // Mock Centrifugo disconnect call
+      const mockFetch = mockCentrifugo();
 
       await fetch(`${ctx.config.apiUrl}/api/grant`, {
         method: "POST",
@@ -660,8 +685,10 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ target: "bob", channel: "agent.alice.revoke2" }),
       });
 
-      const members = await redis.sMembers("perm:alice:revoke2");
+      const members = await ctx.redis.sMembers("perm:alice:revoke2");
       expect(members).not.toContain("bob");
+
+      mockFetch.mockRestore();
     });
 
     it("Test 9.3: POST /api/revoke - Centrifugo Disconnect Called", async () => {
@@ -669,7 +696,7 @@ describe("Permission Management Endpoints", () => {
       let disconnectCalled = false;
 
       // Mock Centrifugo API
-      const mockFetch = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
+      const mockFetch = createFetchMock((input: RequestInfo | URL, init?: RequestInit) => {
         const url = input.toString();
         if (url.includes("/api") && init?.body?.toString().includes("disconnect")) {
           disconnectCalled = true;
@@ -749,6 +776,9 @@ describe("Permission Management Endpoints", () => {
         body: JSON.stringify({ channel: "agent.alice.notgranted" }),
       });
 
+      // Mock Centrifugo disconnect call
+      const mockFetch = mockCentrifugo();
+
       // Try to revoke without ever granting
       const response = await fetch(`${ctx.config.apiUrl}/api/revoke`, {
         method: "POST",
@@ -761,6 +791,8 @@ describe("Permission Management Endpoints", () => {
 
       // Should succeed gracefully
       expect(response.status).toBe(200);
+
+      mockFetch.mockRestore();
     });
 
     it("Test 9.7: POST /api/revoke - Missing Target or Channel", async () => {
@@ -795,7 +827,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Mock Centrifugo for publish
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -829,7 +861,7 @@ describe("Permission Management Endpoints", () => {
       let publishCalled = false;
       let publishChannel: string | null = null;
 
-      const mockFetch = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
+      const mockFetch = createFetchMock((input: RequestInfo | URL, init?: RequestInit) => {
         const url = input.toString();
         if (url.includes("/api")) {
           const body = init?.body?.toString() || "";
@@ -878,7 +910,7 @@ describe("Permission Management Endpoints", () => {
       const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
       let capturedPayload: any = null;
 
-      const mockFetch = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
+      const mockFetch = createFetchMock((input: RequestInfo | URL, init?: RequestInit) => {
         const url = input.toString();
         if (url.includes("/api")) {
           const body = init?.body?.toString() || "";
@@ -1104,42 +1136,43 @@ describe("Permission Management Endpoints", () => {
     it("Test 10.12: POST /api/request - Centrifugo Not Configured", async () => {
       const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
       const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
-      const originalKey = process.env.CENTRIFUGO_API_KEY;
-      process.env.CENTRIFUGO_API_KEY = "";
+      setCentrifugoApiKey("");
 
-      await fetch(`${ctx.config.apiUrl}/api/lock`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${aliceToken}`,
-        },
-        body: JSON.stringify({ channel: "agent.alice.nocent" }),
-      });
+      try {
+        await fetch(`${ctx.config.apiUrl}/api/lock`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${aliceToken}`,
+          },
+          body: JSON.stringify({ channel: "agent.alice.nocent" }),
+        });
 
-      const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${bobToken}`,
-        },
-        body: JSON.stringify({ 
-          channel: "agent.alice.nocent", 
-          reason: "Need access" 
-        }),
-      });
+        const response = await fetch(`${ctx.config.apiUrl}/api/request`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${bobToken}`,
+          },
+          body: JSON.stringify({ 
+            channel: "agent.alice.nocent", 
+            reason: "Need access" 
+          }),
+        });
 
-      expect(response.status).toBe(500);
-      const body = await response.json();
-      expect(body.error).toContain("CENTRIFUGO_API_KEY not configured");
-
-      process.env.CENTRIFUGO_API_KEY = originalKey;
+        expect(response.status).toBe(500);
+        const body = await response.json();
+        expect(body.error).toContain("CENTRIFUGO_API_KEY not configured");
+      } finally {
+        setCentrifugoApiKey(null);
+      }
     });
 
     it("Test 10.13: POST /api/request - Centrifugo Publish Fails", async () => {
       const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
       const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ error: "Internal Server Error" }),
           { status: 500, headers: { "Content-Type": "application/json" } }
@@ -1178,7 +1211,7 @@ describe("Permission Management Endpoints", () => {
       const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
       const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -1195,7 +1228,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Get stats before
-      const beforeStats = await redis.get("stats:total_messages");
+      const beforeStats = await ctx.redis.get("stats:total_messages");
       const beforeCount = parseInt(beforeStats || "0");
 
       await fetch(`${ctx.config.apiUrl}/api/request`, {
@@ -1211,7 +1244,7 @@ describe("Permission Management Endpoints", () => {
       });
 
       // Stats should be tracked (agent added, message count incremented)
-      const isMember = await redis.sIsMember("stats:agents", "bob");
+      const isMember = await ctx.redis.sIsMember("stats:agents", "bob");
       expect(isMember).toBe(true);
 
       mockFetch.mockRestore();

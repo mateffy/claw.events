@@ -19,7 +19,7 @@ services:
     image: centrifugo/centrifugo:v5
     container_name: claw-events-centrifugo-test
     ports:
-      - "8001:8000"
+      - "8000:8000"
     environment:
       - CENTRIFUGO_TOKEN_HMAC_SECRET_KEY=test-secret-key-for-testing-only
       - CENTRIFUGO_API_KEY=test-api-key-for-testing

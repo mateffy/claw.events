@@ -5,6 +5,7 @@ import {
   cleanupTestContext,
   clearTestData,
   createTestToken,
+  mockFetch as createFetchMock,
   type TestContext,
 } from "./test-utils.ts";
 
@@ -30,6 +31,7 @@ describe("Publishing Endpoint Tests", () => {
     if (ctx.redis) {
       await clearTestData(ctx.redis);
     }
+    mock.restore();
   });
 
   describe("POST /api/publish - Basic Functionality", () => {
@@ -37,7 +39,7 @@ describe("Publishing Endpoint Tests", () => {
       const token = await createTestToken("alice", ctx.config.jwtSecret);
 
       // Mock Centrifugo
-      const mockFetch = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
+      const mockFetch = createFetchMock((input: RequestInfo | URL, init?: RequestInit) => {
         const url = input.toString();
         if (url.includes("/api")) {
           return Promise.resolve(new Response(
@@ -67,7 +69,7 @@ describe("Publishing Endpoint Tests", () => {
     it("Test 11.2: POST /api/publish - Own Agent Channel", async () => {
       const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const mockFetch = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
+      const mockFetch = createFetchMock((input: RequestInfo | URL, init?: RequestInit) => {
         const url = input.toString();
         if (url.includes("/api")) {
           return Promise.resolve(new Response(
@@ -97,7 +99,7 @@ describe("Publishing Endpoint Tests", () => {
       let centrifugoCalled = false;
       let publishData: any = null;
 
-      const mockFetch = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
+      const mockFetch = createFetchMock((input: RequestInfo | URL, init?: RequestInit) => {
         const url = input.toString();
         if (url.includes("/api")) {
           centrifugoCalled = true;
@@ -186,7 +188,7 @@ describe("Publishing Endpoint Tests", () => {
         body: JSON.stringify({ channel: "agent.alice.private" }),
       });
 
-      const mockFetch = mock(fetch, (input: RequestInfo | URL, init?: RequestInit) => {
+      const mockFetch = createFetchMock((input: RequestInfo | URL, init?: RequestInit) => {
         const url = input.toString();
         if (url.includes("/api")) {
           return Promise.resolve(new Response(
@@ -252,7 +254,7 @@ describe("Publishing Endpoint Tests", () => {
     it("Test 11.9: POST /api/publish - Rate Limit Redis Key Created", async () => {
       const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -279,7 +281,7 @@ describe("Publishing Endpoint Tests", () => {
     it("Test 11.10: POST /api/publish - Rate Limit 6th Request Within 1s", async () => {
       const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -321,7 +323,7 @@ describe("Publishing Endpoint Tests", () => {
     it("Test 11.11: POST /api/publish - Rate Limit Resets After 1s", async () => {
       const token = await createTestToken("ratetest", ctx.config.jwtSecret);
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -361,7 +363,7 @@ describe("Publishing Endpoint Tests", () => {
     it("Test 11.12: POST /api/publish - Rate Limit retry_after Accuracy", async () => {
       const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -401,7 +403,7 @@ describe("Publishing Endpoint Tests", () => {
       const aliceToken = await createTestToken("alice", ctx.config.jwtSecret);
       const bobToken = await createTestToken("bob", ctx.config.jwtSecret);
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -440,7 +442,7 @@ describe("Publishing Endpoint Tests", () => {
       const token = await createTestToken("alice", ctx.config.jwtSecret);
       const payload = { data: "a".repeat(15000) }; // ~15KB
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -467,7 +469,7 @@ describe("Publishing Endpoint Tests", () => {
       const payloadStr = "a".repeat(16384 - 20); // Account for JSON wrapper
       const payload = { data: payloadStr };
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -511,7 +513,7 @@ describe("Publishing Endpoint Tests", () => {
     it("Test 11.17: POST /api/publish - Empty Payload (Null)", async () => {
       const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -535,7 +537,7 @@ describe("Publishing Endpoint Tests", () => {
     it("Test 11.18: POST /api/publish - No Payload Field", async () => {
       const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -616,7 +618,7 @@ describe("Publishing Endpoint Tests", () => {
     it("Test 11.22: POST /api/publish - Centrifugo Publish Fails", async () => {
       const token = await createTestToken("alice", ctx.config.jwtSecret);
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ error: "Internal Server Error" }),
           { status: 500, headers: { "Content-Type": "application/json" } }
@@ -646,7 +648,7 @@ describe("Publishing Endpoint Tests", () => {
       await ctx.redis.del("stats:agents");
       await ctx.redis.del("stats:total_messages");
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -728,7 +730,7 @@ describe("Publishing Endpoint Tests", () => {
         }),
       });
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -807,7 +809,7 @@ describe("Publishing Endpoint Tests", () => {
 
       // No advertisement set up for this channel
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -863,7 +865,7 @@ describe("Publishing Endpoint Tests", () => {
         }),
       });
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -920,7 +922,7 @@ describe("Publishing Endpoint Tests", () => {
       });
 
       // Valid enum value
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
@@ -984,7 +986,7 @@ describe("Publishing Endpoint Tests", () => {
         }),
       });
 
-      const mockFetch = mock(fetch, () => {
+      const mockFetch = createFetchMock(() => {
         return Promise.resolve(new Response(
           JSON.stringify({ result: { published: true } }),
           { status: 200, headers: { "Content-Type": "application/json" } }

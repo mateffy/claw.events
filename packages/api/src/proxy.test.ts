@@ -5,8 +5,23 @@ import {
   cleanupTestContext,
   clearTestData,
   createTestToken,
+  mockFetch as createFetchMock,
   type TestContext,
 } from "./test-utils.ts";
+
+// Helper to mock Centrifugo API calls
+const mockCentrifugo = () => {
+  return createFetchMock((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input.toString();
+    if (url.includes("/api") && url.includes("800")) {
+      return Promise.resolve(new Response(
+        JSON.stringify({ result: { published: true } }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      ));
+    }
+    return Promise.resolve(new Response("Not found", { status: 404 }));
+  });
+};
 
 describe("Proxy Endpoints (Centrifugo Integration)", () => {
   let ctx: TestContext;
@@ -56,6 +71,7 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.result).toEqual({});
+      expect(body.error).toBeUndefined();
     });
 
     it("Test 4.3: POST /proxy/subscribe - System Channel (system.*)", async () => {
@@ -68,6 +84,7 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.result).toEqual({});
+      expect(body.error).toBeUndefined();
     });
 
     it("Test 4.4: POST /proxy/subscribe - Unlocked Agent Channel", async () => {
@@ -81,6 +98,7 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.result).toEqual({});
+      expect(body.error).toBeUndefined();
     });
 
     it("Test 4.5: POST /proxy/subscribe - Unlocked Agent Channel Anonymous", async () => {
@@ -93,6 +111,7 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.result).toEqual({});
+      expect(body.error).toBeUndefined();
     });
 
     it("Test 4.6: POST /proxy/subscribe - Locked Agent Channel Owner", async () => {
@@ -116,6 +135,7 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.result).toEqual({});
+      expect(body.error).toBeUndefined();
     });
 
     it("Test 4.7: POST /proxy/subscribe - Locked Agent Channel Granted User", async () => {
@@ -148,6 +168,7 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.result).toEqual({});
+      expect(body.error).toBeUndefined();
     });
 
     it("Test 4.8: POST /proxy/subscribe - Locked Agent Channel Non-Granted User", async () => {
@@ -238,6 +259,7 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.result).toEqual({});
+      expect(body.error).toBeUndefined();
     });
   });
 
@@ -252,6 +274,7 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.result).toEqual({});
+      expect(body.error).toBeUndefined();
     });
 
     it("Test 5.2: POST /proxy/publish - System Channel Denied", async () => {
@@ -277,6 +300,7 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.result).toEqual({});
+      expect(body.error).toBeUndefined();
     });
 
     it("Test 5.4: POST /proxy/publish - Agent Channel Non-Owner", async () => {
@@ -313,6 +337,7 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.result).toEqual({});
+      expect(body.error).toBeUndefined();
     });
 
     it("Test 5.6: POST /proxy/publish - Locked Agent Channel Non-Owner Still Denied", async () => {
@@ -621,11 +646,8 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
         body: JSON.stringify({ channel: "agent.alice.test" }),
       });
 
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(403);
       const body = await response.json();
-      // The lock endpoint only validates auth, not ownership in the request
-      // The actual channel name contains the owner (alice), so this will lock alice's channel
-      // This is actually correct behavior - the channel name determines ownership
     });
 
     it("PILLAR 5: Users can ONLY lock their own channels", async () => {
@@ -643,7 +665,7 @@ describe("Proxy Endpoints (Centrifugo Integration)", () => {
 
       expect(response.status).toBe(200);
       const body = await response.json();
-      expect(body.success).toBe(true);
+      expect(body.ok).toBe(true);
 
       // Verify the channel is actually locked
       const subResponse = await fetch(`${ctx.config.apiUrl}/proxy/subscribe`, {
