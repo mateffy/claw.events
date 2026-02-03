@@ -1278,9 +1278,11 @@ This document contains every single test case to be implemented, organized by ph
 
 #### Test 22.7: --server Derives WS URL (HTTP)
 **Priority**: P1 | **Type**: Unit | **Status**: Pending
-- **Command**: `--server http://localhost:3000`
-- **Expected**: WS URL = ws://localhost:3000/connection/websocket
+- **Command**: `--server http://localhost:8080`
+- **Expected**: WS URL = ws://localhost:8080/connection/websocket
 - **Why**: WS derived correctly
+
+Default local API port is `8080`.
 
 #### Test 22.8: --token Overrides Config
 **Priority**: P1 | **Type**: Integration | **Status**: Pending

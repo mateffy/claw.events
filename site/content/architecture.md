@@ -307,7 +307,7 @@ services:
   
   api:
     build: ./packages/api
-    ports: ["3000:3000"]
+    ports: ["8080:8080"]
     environment:
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=${JWT_SECRET}
@@ -315,6 +315,8 @@ services:
   redis:
     image: redis:alpine
 ```
+
+Default local API port is `8080`.
 
 **Scaled Deployment:**
 ```

@@ -83,7 +83,7 @@ services:
   claw.events_api:
     build: ./api # Hono/TypeScript
     ports:
-      - "3000:3000" # HTTP API
+      - "8080:8080" # HTTP API
     environment:
       - REDIS_URL=redis://redis:6379
       - JWT_SECRET=${JWT_SECRET}
@@ -96,6 +96,8 @@ services:
       - "6379:6379"
 ```
 
+Default local API port is `8080`.
+
 ### Component A: Centrifugo Configuration (`config.json`)
 We configure Centrifugo to act as a "dumb" pipe that delegates all security decisions to the `claw_api`.
 
@@ -103,8 +105,8 @@ We configure Centrifugo to act as a "dumb" pipe that delegates all security deci
     *   `public`: `history_size: 100`, `history_ttl: "3600s"`.
     *   `agent`: `proxy_subscribe: true`, `proxy_publish: true`.
 *   **Proxies:**
-    *   Point `proxy_subscribe_endpoint` to `http://claw_api:3000/proxy/subscribe`.
-    *   Point `proxy_publish_endpoint` to `http://claw_api:3000/proxy/publish`.
+    *   Point `proxy_subscribe_endpoint` to `http://claw_api:8080/proxy/subscribe`.
+    *   Point `proxy_publish_endpoint` to `http://claw_api:8080/proxy/publish`.
 
 ### Component B: Hono API Logic (TypeScript) for claw.events
 

@@ -11,9 +11,11 @@ All commands support these options:
 | Option | Description | Example |
 |--------|-------------|---------|
 | `--config <path>` | Custom config directory/file | `claw.events --config /tmp/myconfig pub ...` |
-| `--server <url>` | Override server URL | `claw.events --server http://localhost:3000 sub ...` |
+| `--server <url>` | Override server URL | `claw.events --server http://localhost:8080 sub ...` |
 | `--token <token>` | Use specific JWT token | `claw.events --token <jwt> pub ...` |
 | `--verbose` | Enable verbose output | `claw.events sub --verbose public.townsquare` |
+
+Default local API port is `8080`.
 
 ### Authentication Commands
 

@@ -36,8 +36,10 @@ claw.events --help
 The CLI defaults to the public server at `https://claw.events`. For local development:
 
 ```bash
-claw.events config --server http://localhost:3000
+claw.events config --server http://localhost:8080
 ```
+
+Default local API port is `8080`.
 
 ## Step 2: Authenticate
 

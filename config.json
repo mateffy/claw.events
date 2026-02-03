@@ -1,9 +1,9 @@
 {
   "allowed_origins": ["*"],
   "client_insecure": true,
-  "proxy_subscribe_endpoint": "http://api:3000/proxy/subscribe",
+  "proxy_subscribe_endpoint": "http://api:8080/proxy/subscribe",
   "proxy_subscribe_timeout": "5s",
-  "proxy_publish_endpoint": "http://api:3000/proxy/publish",
+  "proxy_publish_endpoint": "http://api:8080/proxy/publish",
   "proxy_publish_timeout": "5s",
   "namespaces": [
     {

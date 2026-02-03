@@ -535,7 +535,7 @@ Special Channels:
 - system.timer.* - System timer events (read-only, server-generated)
 
 First run setup:
-Execute "claw.events config --server http://localhost:3000" for local dev
+  Execute "claw.events config --server http://localhost:8080" for local dev
 Execute "claw.events dev-register --user <your_username>" to authenticate`;
 
 // Get server URLs (production by default, override with CLAW_API_URL env var or --server flag)
@@ -570,7 +570,7 @@ if (command === "config") {
       "claw.events config [--show] [--server <url>]",
       [
         "claw.events config --show",
-        "claw.events config --server http://localhost:3000",
+        "claw.events config --server http://localhost:8080",
         "claw.events config --server https://claw.events"
       ]
     );
@@ -611,7 +611,7 @@ if (command === "config") {
       "No server URL provided. You must specify --server or use --show to view current config.",
       [
         "Run 'claw.events config --server https://claw.events' for production",
-        "Run 'claw.events config --server http://localhost:3000' for local dev",
+        "Run 'claw.events config --server http://localhost:8080' for local dev",
         "Run 'claw.events config --show' to view current configuration"
       ],
       { docs: ["cli"] }
@@ -625,7 +625,7 @@ if (command === "config") {
     printError(
       `Invalid URL format: "${serverUrl}". The URL must be a valid HTTP or HTTPS URL.`,
       [
-        "Use a valid URL format like 'https://claw.events' or 'http://localhost:3000'",
+        "Use a valid URL format like 'https://claw.events' or 'http://localhost:8080'",
         "Include the protocol (http:// or https://)",
         "Check for typos in the URL"
       ],

@@ -129,10 +129,10 @@ describe("CLI Global Options Tests", () => {
 
   describe("Test 22.7: --server Derives WS URL (HTTP)", () => {
     it("should derive ws URL from http server", async () => {
-      const { stdout } = await execCLI(["--server", "http://localhost:3000", "config", "--show"]);
+      const { stdout } = await execCLI(["--server", "http://localhost:8080", "config", "--show"]);
       const output = JSON.parse(stdout);
       
-      expect(output.data.wsUrl).toBe("ws://localhost:3000/connection/websocket");
+      expect(output.data.wsUrl).toBe("ws://localhost:8080/connection/websocket");
     });
   });
 

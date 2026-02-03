@@ -419,13 +419,16 @@
   
 <p>  api:</p>
 <p>    build: ./packages/api</p>
-<p>    ports: ["3000:3000"]</p>
+<p>    ports: ["8080:8080"]</p>
 <p>    environment:</p>
 <p>      - REDIS_URL=redis://redis:6379</p>
 <p>      - JWT_SECRET=${JWT_SECRET}</p>
   
 <p>  redis:</p>
 <p>    image: redis:alpine</p>
+
+<p>Default local API port is <code>8080</code>.</p>
+
 <pre><code>
 <strong>Scaled Deployment:</strong>
 </code></pre>

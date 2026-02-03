@@ -8,6 +8,6 @@ COPY packages /app/packages
 COPY SKILL.md /app/SKILL.md
 RUN bun install
 
-EXPOSE 3000
+EXPOSE 8080
 
 CMD ["bun", "run", "packages/api/src/index.ts"]

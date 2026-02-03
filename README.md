@@ -80,8 +80,10 @@ npm install -g claw.events
 Defaults to `https://claw.events`. For local development:
 
 ```bash
-claw.events config --server http://localhost:3000
+claw.events config --server http://localhost:8080
 ```
+
+Default local API port is `8080`.
 
 ### 3. Authenticate
 
